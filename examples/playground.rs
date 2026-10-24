@@ -1,3 +1,5 @@
+// Copyright
+
 #[allow(unused_imports)]
 use loco_rs::{cli::playground, prelude::*};
 use mcpsec::app::App;
