@@ -439,41 +439,6 @@ export function Registry() {
                     onChange={setPage}
                 />
             </div>
-
-            {sync.data && sync.data.runs.length > 0 && (
-                <div style={{marginTop: 20}}>
-                    <h2 style={{fontSize: 15}}>Últimas sincronizações</h2>
-                    <div className="card">
-                        <table>
-                            <thead>
-                            <tr>
-                                <th>Início</th>
-                                <th>Tipo</th>
-                                <th>Status</th>
-                                <th>Vistos</th>
-                                <th>Novos</th>
-                                <th>Páginas</th>
-                            </tr>
-                            </thead>
-                            <tbody>
-                            {sync.data.runs.slice(0, 5).map((r) => (
-                                <tr key={r.id}>
-                                    <td className="mono">{new Date(r.started_at).toLocaleString()}</td>
-                                    <td>{r.run_type}</td>
-                                    <td>
-                                        <span className={`badge status-${r.status}`}>{r.status}</span>
-                                        {r.error && <div className="mono" style={{color: 'var(--red)'}}>{r.error}</div>}
-                                    </td>
-                                    <td>{r.servers_seen}</td>
-                                    <td>{r.servers_new}</td>
-                                    <td>{r.pages_fetched}</td>
-                                </tr>
-                            ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            )}
         </main>
     )
 }
