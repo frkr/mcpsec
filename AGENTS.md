@@ -32,10 +32,33 @@ not, read it directly — it is a normal markdown file.
 
 ## Copyright header (required)
 
-Todo arquivo que será comitado deve conter o cabeçalho de copyright Apache
-License 2.0. O arquivo de referência com o cabeçalho completo é
-[`examples/playground.rs`](examples/playground.rs) — copie o bloco de comentário
-do início desse arquivo para o topo de qualquer arquivo novo que você criar.
+Todo arquivo versionado deve conter o cabeçalho de copyright Apache License
+2.0 — **incluindo o frontend** (`frontend/src/**`, `frontend/vite.config.ts`,
+`frontend/index.html`). O arquivo de referência com o cabeçalho completo é
+[`examples/playground.rs`](examples/playground.rs) — copie o bloco de
+comentário do início desse arquivo para o topo do arquivo, no formato de
+comentário da linguagem:
+
+| Tipo de arquivo | Formato |
+|---|---|
+| Rust, TypeScript/TSX, CSS, config JS | `/* … */` (igual ao `playground.rs`) |
+| HTML | `<!-- … -->` |
+
+Exceções — **não** adicione o cabeçalho a:
+
+- `frontend/src/bindings/**` e `bindings/**`: gerados por `ts-rs` (regenerar
+  apagaria o cabeçalho);
+- `package.json`, `package-lock.json` e outros metadados JSON;
+- arquivos gerados em geral.
+
+Antes de comitar, confira o que ficou de fora:
+
+```sh
+git ls-files '*.rs' '*.ts' '*.tsx' '*.css' '*.html' \
+  | grep -v bindings | xargs grep -L 'Apache License'
+```
+
+Tudo que aparecer e não for exceção precisa do cabeçalho.
 
 ## Before you call it done
 
