@@ -245,8 +245,37 @@ impl Hooks for App {
     async fn boot(
         mode: StartMode,
         environment: &Environment,
-        config: Config,
+        mut config: Config,
     ) -> Result<BootResult> {
+        // Resolve the real database BEFORE Loco connects: DATABASE_URL env →
+        // marker row in the SQLite file (settings-screen activation) → the
+        // YAML default. The marker read is safe because it targets the YAML
+        // sqlite file only. Also keep the config in sync so CLI diagnostics
+        // and `db::converge` flags act on the same database the app uses.
+        let default_uri = config.database.uri.clone();
+        let (uri, backend, degraded) = crate::db_switch::resolve_boot_uri(&default_uri)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "db resolution failed; staying on config default");
+                (
+                    default_uri.clone(),
+                    crate::db_switch::Backend::Sqlite,
+                    false,
+                )
+            });
+        config.database.uri = uri;
+        let _ = crate::db_switch::init(crate::db_switch::DbState {
+            backend,
+            degraded_fallback: degraded,
+        });
+        crate::db_switch::degraded::set(degraded);
+        if degraded {
+            tracing::warn!(
+                "DEGRADED MODE: running on the superseded SQLite file. Configure a \
+                 reachable Postgres or fix the marked one; writes on this file \
+                 will be discarded when Postgres activates."
+            );
+        }
         create_app::<Self, Migrator>(mode, environment, config).await
     }
 
@@ -258,11 +287,19 @@ impl Hooks for App {
         AppRoutes::with_default_routes() // controller routes below
             .add_route(controllers::auth::routes())
             .add_route(controllers::servers::routes())
+            .add_route(controllers::custom_servers::routes())
             .add_route(controllers::settings::routes())
             .add_route(controllers::sync::routes())
             .add_route(controllers::mcp::routes())
             .add_route(controllers::proxy::routes())
             .add_route(controllers::proxy_admin::routes())
+    }
+
+    async fn after_routes(mut router: axum::Router, _ctx: &AppContext) -> Result<axum::Router> {
+        // Degraded-mode write gate: when booted on a superseded SQLite
+        // fallback, mutating requests get 503 (see `db_gate`).
+        router = router.layer(axum::middleware::from_fn(crate::db_gate::guard));
+        Ok(router)
     }
     async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
         queue.register(RegistrySyncWorker::build(ctx)).await?;
@@ -277,6 +314,7 @@ impl Hooks for App {
         tasks.register(tasks::user_delete::UserDelete);
         tasks.register(tasks::registry_sync::RegistrySync);
         tasks.register(tasks::registry_sync_tick::RegistrySyncTick);
+        tasks.register(tasks::relabel_tools::RelabelTools);
     }
     async fn truncate(ctx: &AppContext) -> Result<()> {
         truncate_table(&ctx.db, users::Entity).await?;

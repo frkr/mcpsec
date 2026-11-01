@@ -232,6 +232,30 @@ async function parseErrorBody(res: Response): Promise<ApiError | null> {
     ) {
       return data as ApiError;
     }
+    // Loco's own error envelope is `{error, description}` (see
+    // `ErrorDetail`), not the `ApiError` shape above. Handlers that return
+    // `bad_request(..)`, `not_found()`, `Error::CustomError` and friends all
+    // land here, so without this mapping every one of them surfaces as a bare
+    // "Request failed with status N" and the reason the server took the
+    // trouble to write is lost.
+    if (
+      typeof data === "object" &&
+      data !== null &&
+      ("error" in data || "description" in data)
+    ) {
+      const loco = data as { error?: unknown; description?: unknown };
+      const message =
+        typeof loco.description === "string" && loco.description !== ""
+          ? loco.description
+          : typeof loco.error === "string"
+            ? loco.error
+            : `Request failed with status ${res.status}`;
+      return {
+        code: typeof loco.error === "string" ? loco.error : "error",
+        message,
+        details: null,
+      };
+    }
     return null;
   } catch {
     return null;

@@ -325,6 +325,44 @@ impl ActiveModel {
         Ok(res.rows_affected)
     }
 
+    /// Revoke every live grant pointing at a tool of `server_id`.
+    ///
+    /// Needed before a server is deleted: `mcp_proxy_grants.mcp_tool_id` has
+    /// no foreign key (the migration creates the table with no refs), so a
+    /// cascade delete of the server's tools leaves grant rows behind that
+    /// [`ActiveModel::live_for_session`] can never resolve. Revoking here keeps
+    /// the audit trail (`revoked_at` set) instead of losing it to a silent
+    /// dangling row.
+    ///
+    /// # Errors
+    /// Returns [`DbErr`] when the query or update fails.
+    pub async fn revoke_for_tools_of_server(
+        db: &DatabaseConnection,
+        server_id: i64,
+    ) -> Result<u64, DbErr> {
+        let tool_ids: Vec<i64> = crate::models::mcp_tools::Entity::find()
+            .filter(crate::models::_entities::mcp_tools::Column::McpServerId.eq(server_id))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        if tool_ids.is_empty() {
+            return Ok(0);
+        }
+        let now: DateTimeWithTimeZone = Utc::now().into();
+        let res = Entity::update_many()
+            .col_expr(
+                mcp_proxy_grants::Column::RevokedAt,
+                sea_orm::sea_query::Expr::value(now),
+            )
+            .filter(Column::McpToolId.is_in(tool_ids))
+            .filter(Column::RevokedAt.is_null())
+            .exec(db)
+            .await?;
+        Ok(res.rows_affected)
+    }
+
     /// Delete grants that expired more than [`GRANT_GRACE`] ago.
     ///
     /// # Errors

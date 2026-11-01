@@ -311,6 +311,38 @@ impl ActiveModel {
 
     /// Relabel a single tool as part of human review.
     ///
+    /// `server_id` must own the tool: labels are per-server, and accepting a
+    /// foreign id here would let one server's review screen write another
+    /// server's tool categories. Returns [`ToolNotFound`] instead of a bare
+    /// `DbErr` so the HTTP layer can answer 400 with a clear message instead
+    /// of a 500.
+    ///
+    /// # Errors
+    /// Returns [`ToolNotFound`] when the id does not exist **or** belongs to
+    /// a different server; [`DbErr`] when the query fails.
+    pub async fn set_category_for_server(
+        db: &DatabaseConnection,
+        server_id: i64,
+        tool_id: i64,
+        category: ToolCategory,
+    ) -> Result<Model, SetCategoryError> {
+        let tool = Entity::find_by_id(tool_id)
+            .one(db)
+            .await
+            .map_err(SetCategoryError::Db)?;
+        let Some(tool) = tool.filter(|t| t.mcp_server_id == server_id) else {
+            return Err(SetCategoryError::NotFound);
+        };
+        let mut am: ActiveModel = tool.into();
+        am.category = Set(category.as_str().to_string());
+        am.classified_by = Set("user".to_string());
+        am.confidence = Set(None);
+        am.update(db).await.map_err(SetCategoryError::Db)
+    }
+
+    /// Relabel without the ownership check (task `relabel_tools` walks
+    /// `mcp_tools` directly and knows the rows exist).
+    ///
     /// # Errors
     /// Returns [`DbErr`] when the query fails.
     pub async fn set_category(
@@ -330,6 +362,16 @@ impl ActiveModel {
     }
 }
 
+/// Error for [`ActiveModel::set_category_for_server`]: a 400-shaped failure,
+/// not a 500.
+#[derive(Debug)]
+pub enum SetCategoryError {
+    /// The tool does not exist, or exists but belongs to another server.
+    NotFound,
+    /// The update itself failed.
+    Db(DbErr),
+}
+
 /// A tool as discovered from a remote MCP server.
 #[derive(Debug, Clone)]
 pub struct DiscoveredTool {
@@ -338,9 +380,40 @@ pub struct DiscoveredTool {
     pub input_schema: Option<Json>,
 }
 
+/// Hint matching at token boundaries for single-word hints: `get_address`
+/// must not match `add`, `list_labels` must not match `label`, and a
+/// description saying "clicks" must not match the `cli` exec hint. Compound
+/// hints that carry `_` (e.g. `delete_all`, `drop_`, `reset_`) keep plain
+/// `contains` for both names and descriptions: the underscore already marks
+/// the internal boundary. Exact-token matching costs some inflected verbs in
+/// prose ("creates" does not match "create"); those rows land in the
+/// low-confidence WRITE fallback for the reviewer instead of being
+/// mislabeled ADMIN by a substring accident.
+fn matches_hints(text: &str, hints: &[&str]) -> bool {
+    hints.iter().any(|h| {
+        if h.contains('_') {
+            text.contains(h)
+        } else {
+            text.split(|c: char| !c.is_alphanumeric()).any(|t| t == *h)
+        }
+    })
+}
+
 /// Heuristic first-pass classification of a tool into READ_ONLY / WRITE /
-/// ADMIN. Intentionally conservative: anything ambiguous falls back to ADMIN,
-/// which is the safest label to over-assign at review time.
+/// ADMIN. The labels mean:
+///
+/// - `READ_ONLY`: reads state, changes nothing.
+/// - `WRITE`: mutates state with normal or sensitive scope — config,
+///   permissions, credentials, members, billing. Writes are serious but
+///   bounded to one resource.
+/// - `ADMIN`: **executes** — runs commands, code or scripts, or destroys
+///   data at scale irreversibly (`delete_all`, `drop_table`, `purge`).
+///
+/// The ambiguous fallback is `WRITE` (low confidence, 0.3), never `ADMIN`:
+/// over-assigning ADMIN desensitizes the reviewer — the one label that means
+/// "runs code" must stay rare and meaningful, and the human review pass is
+/// cheap. The runtime guard is unchanged: WRITE and ADMIN both still require
+/// `confirmed: true` to execute.
 ///
 /// Returns the label plus a rough confidence (0.0–1.0) so the UI can flag
 /// low-confidence rows for the reviewer.
@@ -353,7 +426,47 @@ pub fn classify(tool: &DiscoveredTool) -> (ToolCategory, f32) {
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    let admin_hints = [
+    let exec_hints = [
+        // comandos e código
+        "exec",
+        "execute",
+        "shell",
+        "command",
+        "cmd",
+        "bash",
+        "script",
+        "eval",
+        "evaluate",
+        "run",
+        "invoke",
+        "spawn",
+        "subprocess",
+        "terminal",
+        "cli",
+        // deploy/infra
+        "deploy",
+        "provision",
+        "infra",
+        "cluster",
+        "kubectl",
+        "terraform",
+        // destrutivo em massa / irreversível
+        "delete_all",
+        "drop_",
+        "truncate",
+        "purge",
+        "wipe",
+        "nuke",
+        "reset_",
+        "destroy",
+        "terminate",
+    ];
+    let write_hints = [
+        "create", "add", "new", "update", "edit", "set", "save", "write", "delete", "remove",
+        "rename", "move", "send", "post", "submit", "assign", "close", "reopen", "cancel",
+        "archive", "restore", "merge", "assignee", "label", "comment", "reply", "publish",
+    ];
+    let sensitive_hints = [
         "admin",
         "config",
         "setting",
@@ -371,17 +484,9 @@ pub fn classify(tool: &DiscoveredTool) -> (ToolCategory, f32) {
         "workspace",
         "org",
         "organization",
-        "delete_all",
-        "reset",
         "disable",
         "enable",
         "webhook",
-    ];
-    let write_hints = [
-        "create", "add", "new", "update", "edit", "set", "save", "write", "delete", "remove",
-        "rename", "move", "send", "post", "submit", "assign", "close", "reopen", "cancel",
-        "archive", "restore", "merge", "assignee", "label", "comment", "reply", "run", "exec",
-        "deploy", "publish",
     ];
     let read_hints = [
         "get",
@@ -405,34 +510,44 @@ pub fn classify(tool: &DiscoveredTool) -> (ToolCategory, f32) {
         "health",
     ];
 
-    let name_admin = admin_hints.iter().any(|k| name.contains(k));
-    let desc_admin = admin_hints.iter().any(|k| desc.contains(k));
-    let name_write = write_hints.iter().any(|k| name.contains(k));
-    let desc_write = write_hints.iter().any(|k| desc.contains(k));
-    let name_read = read_hints.iter().any(|k| name.contains(k));
-    let desc_read = read_hints.iter().any(|k| desc.contains(k));
+    let name_exec = matches_hints(&name, &exec_hints);
+    let desc_exec = matches_hints(&desc, &exec_hints);
+    let name_write = matches_hints(&name, &write_hints);
+    let desc_write = matches_hints(&desc, &write_hints);
+    let name_sensitive = matches_hints(&name, &sensitive_hints);
+    let desc_sensitive = matches_hints(&desc, &sensitive_hints);
+    let name_read = matches_hints(&name, &read_hints);
+    let desc_read = matches_hints(&desc, &read_hints);
 
-    // Highest precedence: admin anywhere.
-    if name_admin || desc_admin {
-        let confidence = if name_admin { 0.9 } else { 0.6 };
-        return (ToolCategory::Admin, confidence);
+    // Execução (ADMIN) sempre vence: rodar comando/código é a ação de maior
+    // risco e não há contexto de leitura que a torne segura.
+    if name_exec {
+        return (ToolCategory::Admin, 0.9);
     }
-    // Explicit write verbs in the name dominate over read hints in prose.
+    if desc_exec {
+        return (ToolCategory::Admin, 0.6);
+    }
+    // Escrita explícita no nome domina read no nome (read em prose não conta).
     if name_write && !name_read {
         return (ToolCategory::Write, 0.85);
     }
     if name_write && name_read {
-        // e.g. `get_or_create_x`: ambiguous, prefer write (safer than read).
+        // e.g. `get_or_create_x`: ambíguo, prefere write (mais seguro que read).
         return (ToolCategory::Write, 0.5);
     }
     if desc_write && !desc_read {
         return (ToolCategory::Write, 0.6);
     }
+    // Sinal sensível (config/permissão/credencial) em qualquer lugar: é escrita,
+    // só que sensível — não é execução.
+    if name_sensitive || desc_sensitive {
+        return (ToolCategory::Write, 0.55);
+    }
     if name_read || desc_read {
         return (ToolCategory::ReadOnly, if name_read { 0.8 } else { 0.5 });
     }
-    // No signal at all: fail closed.
-    (ToolCategory::Admin, 0.3)
+    // No signal at all: fail closed — normal WRITE (0.3), never ADMIN.
+    (ToolCategory::Write, 0.3)
 }
 
 #[async_trait::async_trait]

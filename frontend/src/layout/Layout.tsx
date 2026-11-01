@@ -209,6 +209,7 @@ import {useEffect, useState} from 'react'
 import {NavLink, Outlet, useNavigate} from 'react-router'
 import {clearToken, getToken} from '../auth/token'
 import {get} from '../api/client'
+import {applyTheme, loadTheme, type Theme} from '../theme'
 
 const queryClient = new QueryClient()
 export {queryClient}
@@ -216,6 +217,13 @@ export {queryClient}
 export function Layout() {
     const navigate = useNavigate()
     const isAuthenticated = getToken() !== null
+    const [theme, setTheme] = useState<Theme>(loadTheme())
+
+    function toggleTheme() {
+        const next: Theme = theme === 'dark' ? 'light' : 'dark'
+        applyTheme(next)
+        setTheme(next)
+    }
 
     function handleLogout() {
         clearToken()
@@ -227,16 +235,23 @@ export function Layout() {
         <div>
             <header className="topbar">
                 <span className="brand">🔐 mcpsec</span>
-                {isAuthenticated && (
-                    <nav>
-                        <NavLink to="/registry">Registro</NavLink>
-                        <NavLink to="/runner">MCPs Autorizados</NavLink>
-                        <NavLink to="/proxy">Proxy MCP</NavLink>
-                        <NavLink to="/proxy/docs">Como usar</NavLink>
-                        <NavLink to="/settings">Configurações</NavLink>
-                    </nav>
-                )}
-                <div>
+                <nav>
+                    {isAuthenticated && <NavLink to="/registry">Registro</NavLink>}
+                    {isAuthenticated && <NavLink to="/custom-servers">MCPs Customizados</NavLink>}
+                    {isAuthenticated && <NavLink to="/runner">MCPs Autorizados</NavLink>}
+                    {isAuthenticated && <NavLink to="/proxy">Proxy MCP</NavLink>}
+                    <NavLink to="/docs">Como usar</NavLink>
+                    {isAuthenticated && <NavLink to="/settings">Configurações</NavLink>}
+                </nav>
+                <div className="spread" style={{gap: 8}}>
+                    <button
+                        type="button"
+                        className="small"
+                        onClick={toggleTheme}
+                        title={theme === 'dark' ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
+                    >
+                        {theme === 'dark' ? '☀️ Claro' : '🌙 Escuro'}
+                    </button>
                     {isAuthenticated ? (
                         <button type="button" className="small" onClick={handleLogout}>
                             Sair
@@ -291,11 +306,14 @@ export function useDebounced<T>(value: T, delayMs = 300): T {
     return debounced
 }
 
-export function useSyncStatus() {
+export function useSyncStatus(options?: {poll?: boolean}) {
+    // Sem `poll`, uma única consulta consome o cache (as telas que só leem
+    // o último resultado não precisam ficar barrando o backend). O polling
+    // fica nas telas que exibem o andamento ao vivo (Settings, Registry).
     return useQuery({
         queryKey: ['sync'],
         queryFn: () => get<import('../bindings/SyncStatus').SyncStatus>('/api/sync'),
-        refetchInterval: 4000,
+        refetchInterval: options?.poll ? 4000 : false,
     })
 }
 
@@ -304,6 +322,9 @@ export function useInvalidateAll() {
     return () => {
         void qc.invalidateQueries({queryKey: ['servers']})
         void qc.invalidateQueries({queryKey: ['server']})
+        // Custom servers live in the same table, so the registry list needs the
+        // same refresh after a create/edit/delete/activate.
+        void qc.invalidateQueries({queryKey: ['custom-servers']})
         void qc.invalidateQueries({queryKey: ['sync']})
     }
 }

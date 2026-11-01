@@ -204,26 +204,240 @@
 
 */
 
+//! Custom ("manually registered") MCP servers.
+//!
+//! The registry sync only knows the official registry, so servers like
+//! `https://mcp.clickup.com/mcp` have no way in. This controller owns the CRUD
+//! for those rows and nothing else: the lifecycle (`new → activating →
+//! awaiting_review → active`) is the same one the registry rows use, so a
+//! custom server is a first-class citizen everywhere downstream — review,
+//! runner, proxy, audit.
+//!
+//! Every row written here carries `sync_source = "custom"`, which is what
+//! separates it from the mirrored rows and keeps the sync from touching it.
+
 use loco_rs::prelude::*;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-pub struct DownloadWorker {
-    pub ctx: AppContext,
+use crate::models::mcp_servers::{
+    self, CustomServerError, CustomServerInput, CustomServerPatch, STREAMABLE_HTTP,
+};
+use crate::models::mcp_tools;
+use crate::views::servers::{ServerDetail, ServerSummary};
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListParams {
+    /// Free-text filter over registry name, title and description.
+    pub q: Option<String>,
+    /// 1-based page number (default 1).
+    pub page: Option<u64>,
+    /// Rows per page (default 50, max 200).
+    pub page_size: Option<u64>,
 }
 
-#[derive(Deserialize, Debug, Serialize)]
-pub struct DownloadWorkerArgs {
-    pub user_guid: String,
+/// `GET /api/custom-servers` — paginated list of hand-registered servers.
+#[debug_handler]
+pub async fn list(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Query(params): Query<ListParams>,
+) -> Result<Response> {
+    let page = mcp_servers::Model::paginate_custom(
+        &ctx.db,
+        params.q.as_deref(),
+        params.page.unwrap_or(1),
+        params.page_size.unwrap_or(50),
+    )
+    .await?;
+    let items: Vec<ServerSummary> = page.items.iter().map(ServerSummary::from_model).collect();
+    format::json(serde_json::json!({
+        "servers": items,
+        "page": page.page,
+        "page_size": page.page_size,
+        "total_items": page.total_items,
+        "filtered_items": page.filtered_items,
+        "total_pages": page.total_pages,
+        "counts": page.counts,
+    }))
 }
 
-#[async_trait]
-impl BackgroundWorker<DownloadWorkerArgs> for DownloadWorker {
-    fn build(ctx: &AppContext) -> Self {
-        Self { ctx: ctx.clone() }
-    }
-    async fn perform(&self, _args: DownloadWorkerArgs) -> Result<()> {
-        // TODO: Some actual work goes here...
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[ts(export, export_to = "../frontend/src/bindings/")]
+pub struct CustomServerCreateParams {
+    /// Stable identifier shown in the UI, e.g. `clickup`. Must be unique.
+    pub registry_name: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub version: String,
+    /// Must be https and pass the SSRF fence.
+    pub remote_url: String,
+    /// Defaults to `streamable-http`; anything else is refused because the
+    /// MCP client only speaks that transport.
+    pub remote_type: Option<String>,
+}
 
-        Ok(())
+/// `POST /api/custom-servers` — register a server by hand. The row starts in
+/// `new`, exactly like a freshly synced registry row.
+#[debug_handler]
+pub async fn create(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Json(params): Json<CustomServerCreateParams>,
+) -> Result<Response> {
+    let input = CustomServerInput {
+        registry_name: params.registry_name,
+        title: params.title,
+        description: params.description,
+        version: params.version,
+        remote_url: params.remote_url,
+        remote_type: params.remote_type,
+    };
+    match mcp_servers::ActiveModel::create_custom(&ctx.db, &input).await {
+        Ok(saved) => format::json(ServerDetail::from_models(&saved, &[])),
+        Err(err) => custom_error(err),
     }
+}
+
+/// `GET /api/custom-servers/{id}` — one custom server with its tools.
+#[debug_handler]
+pub async fn detail(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Path(id): Path<i64>,
+) -> Result<Response> {
+    let Some(server) = load_custom(&ctx, id).await? else {
+        return not_found();
+    };
+    let tools = mcp_tools::Model::list_for_server(&ctx.db, id).await?;
+    format::json(ServerDetail::from_models(&server, &tools))
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[ts(export, export_to = "../frontend/src/bindings/")]
+pub struct CustomServerUpdateParams {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub remote_url: Option<String>,
+}
+
+/// `PUT /api/custom-servers/{id}` — edit title, description, version or the
+/// endpoint. Registry rows are refused (the sync would overwrite them).
+#[debug_handler]
+pub async fn update(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Path(id): Path<i64>,
+    Json(params): Json<CustomServerUpdateParams>,
+) -> Result<Response> {
+    let Some(server) = load_custom(&ctx, id).await? else {
+        return not_found();
+    };
+    let patch = CustomServerPatch {
+        title: params.title,
+        description: params.description,
+        version: params.version,
+        remote_url: params.remote_url,
+    };
+    match server.update_custom(&ctx.db, &patch).await {
+        Ok(saved) => {
+            let tools = mcp_tools::Model::list_for_server(&ctx.db, id).await?;
+            format::json(ServerDetail::from_models(&saved, &tools))
+        }
+        Err(err) => custom_error(err),
+    }
+}
+
+/// `DELETE /api/custom-servers/{id}` — only while not active. An active server
+/// may back live proxy sessions; disabling it first is the supported path.
+#[debug_handler]
+pub async fn destroy(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Path(id): Path<i64>,
+) -> Result<Response> {
+    let Some(server) = load_custom(&ctx, id).await? else {
+        return not_found();
+    };
+    match server.delete_custom(&ctx.db).await {
+        Ok(()) => format::json(serde_json::json!({ "ok": true })),
+        Err(err) => custom_error(err),
+    }
+}
+
+/// `POST /api/custom-servers/{id}/activate` — enter the same activation
+/// workflow the registry rows use. The worker discovers and labels tools in
+/// the background; the UI polls `GET /api/custom-servers/{id}` until lifecycle
+/// becomes `awaiting_review`.
+#[debug_handler]
+pub async fn activate(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Path(id): Path<i64>,
+) -> Result<Response> {
+    let Some(server) = load_custom(&ctx, id).await? else {
+        return not_found();
+    };
+    let am: mcp_servers::ActiveModel = server.into();
+    if let Err(err) = am.start_activation(&ctx.db).await {
+        return bad_request(err.to_string());
+    }
+    crate::workers::activation::ActivationWorker::perform_later(
+        &ctx,
+        crate::workers::activation::ActivationWorkerArgs { server_id: id },
+    )
+    .await?;
+    format::json(serde_json::json!({ "ok": true, "status": "activating" }))
+}
+
+/// `GET /api/custom-servers/meta` — the transport the form must send, so the
+/// SPA never hard-codes a string the backend would then reject.
+#[debug_handler]
+pub async fn meta(_auth: auth::JWT, State(_ctx): State<AppContext>) -> Result<Response> {
+    format::json(serde_json::json!({ "remote_type": STREAMABLE_HTTP }))
+}
+
+async fn load_custom(ctx: &AppContext, id: i64) -> Result<Option<mcp_servers::Model>> {
+    let Some(server) = mcp_servers::Entity::find_by_id(id).one(&ctx.db).await? else {
+        return Ok(None);
+    };
+    // A registry row is not addressable through this controller: every write
+    // here would either be overwritten by the sync or delete a mirrored row.
+    Ok(server.sync_source().is_custom().then_some(server))
+}
+
+/// Map the model's error enum onto the HTTP status each case deserves.
+///
+/// The message travels in Loco's `ErrorDetail.description`, which
+/// `frontend/src/api/client.ts` maps onto `ApiClientError.message` — so the
+/// reason the model wrote ("pick a different identifier", "disable it first")
+/// reaches the user instead of collapsing into a bare status code.
+fn custom_error(err: CustomServerError) -> Result<Response> {
+    match err {
+        CustomServerError::Invalid(msg) => bad_request(msg),
+        CustomServerError::NotFound => not_found(),
+        CustomServerError::DuplicateName(msg) => conflict("conflict", msg),
+        CustomServerError::Conflict(msg) => conflict("active_server", msg),
+    }
+}
+
+/// A 409 whose description explains the refusal.
+fn conflict(code: &str, message: String) -> Result<Response> {
+    Err(Error::CustomError(
+        axum::http::StatusCode::CONFLICT,
+        loco_rs::controller::ErrorDetail::new(code, message),
+    ))
+}
+
+pub fn routes() -> Routes {
+    Routes::new()
+        .prefix("/api/custom-servers")
+        .add("/", get(list))
+        .add("/", post(create))
+        .add("/meta", get(meta))
+        .add("/{id}", get(detail))
+        .add("/{id}", put(update))
+        .add("/{id}", delete(destroy))
+        .add("/{id}/activate", post(activate))
 }

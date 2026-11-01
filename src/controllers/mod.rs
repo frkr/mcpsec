@@ -205,6 +205,7 @@
 */
 
 pub mod auth;
+pub mod custom_servers;
 pub mod mcp;
 pub mod proxy;
 pub mod proxy_admin;

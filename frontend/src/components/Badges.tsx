@@ -230,7 +230,15 @@ export function LifecycleBadge({lifecycle}: { lifecycle: string }) {
 }
 
 export function CategoryBadge({category}: { category: string }) {
-    return <span className={`badge ${category.toLowerCase()}`}>{category}</span>
+    // ADMIN = execução: roda comando/código ou apaga em massa de forma
+    // irreversível. A string persisted continua "ADMIN" (contrato JSON).
+    const title =
+        category === 'ADMIN' ? 'executa comandos/código — exige confirmed: true' : undefined
+    return (
+        <span className={`badge ${category.toLowerCase()}`} title={title}>
+            {category}
+        </span>
+    )
 }
 
 export function ServerTitle({server}: { server: ServerSummary | { title: string; registry_name: string } }) {

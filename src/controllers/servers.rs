@@ -217,6 +217,9 @@ pub struct ListParams {
     pub q: Option<String>,
     /// Lifecycle filter (`new`, `active`, …).
     pub lifecycle: Option<String>,
+    /// Source filter: `registry` (mirrored rows only), `custom` (hand-added)
+    /// or `all`/omitted for both.
+    pub sync_source: Option<String>,
     /// 1-based page number (default 1).
     pub page: Option<u64>,
     /// Rows per page (default 50, max 200).
@@ -233,10 +236,11 @@ pub async fn list(
     State(ctx): State<AppContext>,
     Query(params): Query<ListParams>,
 ) -> Result<Response> {
-    let page = mcp_servers::Model::paginate(
+    let page = mcp_servers::Model::paginate_with_source(
         &ctx.db,
         params.q.as_deref(),
         params.lifecycle.as_deref(),
+        params.sync_source.as_deref(),
         params.page.unwrap_or(1),
         params.page_size.unwrap_or(50),
     )
@@ -315,7 +319,24 @@ pub async fn approve(
     if let Some(labels) = &params.labels {
         for label in labels {
             let category = mcp_servers::ToolCategory::parse(&label.category);
-            mcp_tools::ActiveModel::set_category(&ctx.db, label.tool_id, category).await?;
+            // Ownership check: a label for a tool of another server is a
+            // client bug, not a server fault — 400 with the id, never a 500.
+            if let Err(e) = mcp_tools::ActiveModel::set_category_for_server(
+                &ctx.db,
+                id,
+                label.tool_id,
+                category,
+            )
+            .await
+            {
+                return match e {
+                    mcp_tools::SetCategoryError::NotFound => bad_request(format!(
+                        "tool {} does not belong to server {} (or does not exist)",
+                        label.tool_id, id
+                    )),
+                    mcp_tools::SetCategoryError::Db(err) => return Err(err.into()),
+                };
+            }
         }
     }
 
@@ -383,6 +404,41 @@ pub struct RelabelParams {
     pub category: String,
 }
 
+/// `POST /api/servers/{id}/meta` — set the user's display title/description.
+/// Empty strings clear the override (registry values shine through).
+#[derive(Debug, Deserialize, TS)]
+#[ts(export, export_to = "../frontend/src/bindings/")]
+pub struct ServerMetaParams {
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[debug_handler]
+pub async fn update_meta(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Path(id): Path<i64>,
+    Json(params): Json<ServerMetaParams>,
+) -> Result<Response> {
+    let server = mcp_servers::Entity::find_by_id(id)
+        .one(&ctx.db)
+        .await?
+        .ok_or(loco_rs::Error::NotFound)?;
+    let saved = server
+        .set_custom_meta(&ctx.db, params.title, params.description)
+        .await?;
+    let tools = mcp_tools::Model::list_for_server(&ctx.db, saved.id).await?;
+    format::json(ServerDetail::from_models(&saved, &tools))
+}
+
+/// `POST /api/servers/acknowledge-new` — bulk-acknowledge every `new` server
+/// so the NOVO badge stops nagging (settings screen action).
+#[debug_handler]
+pub async fn acknowledge_new(_auth: auth::JWT, State(ctx): State<AppContext>) -> Result<Response> {
+    let updated = mcp_servers::Model::acknowledge_all_new(&ctx.db).await?;
+    format::json(serde_json::json!({ "ok": true, "acknowledged": updated }))
+}
+
 /// `GET /api/servers/authorized` — servers cleared to run, with tools, for
 /// the runner screen.
 #[debug_handler]
@@ -412,4 +468,9 @@ pub fn routes() -> Routes {
         .add("/{id}/reject", post(reject))
         .add("/{id}/disable", post(disable))
         .add("/{id}/tools/{tool_id}/label", post(relabel))
+        // PUT is the intended verb (idempotent partial update) and is what the
+        // SPA sends; POST stays for compatibility with existing clients.
+        .add("/{id}/meta", put(update_meta))
+        .add("/{id}/meta", post(update_meta))
+        .add("/acknowledge-new", post(acknowledge_new))
 }

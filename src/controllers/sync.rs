@@ -281,6 +281,9 @@ impl SyncRunView {
 /// `POST /api/sync/run` — trigger a sync now (background worker).
 #[debug_handler]
 pub async fn run_now(_auth: auth::JWT, State(ctx): State<AppContext>) -> Result<Response> {
+    // Reap stale first: a hung/died process holds the lock otherwise, and the
+    // operator pressing "Sincronizar agora" is exactly the recovery path.
+    sync_runs::Model::reap_stale(&ctx.db, sync_runs::STALE_LEASE).await?;
     if sync_runs::Model::running(&ctx.db).await?.is_some() {
         return bad_request("a registry sync is already running");
     }

@@ -205,7 +205,7 @@
 */
 
 import {useEffect, useState} from 'react'
-import {Link, useParams} from 'react-router'
+import {Link, useNavigate, useParams} from 'react-router'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {get, post} from '../api/client'
 import type {LabelInput} from '../bindings/LabelInput'
@@ -219,6 +219,7 @@ export function Review() {
     const {id} = useParams()
     const serverId = Number(id)
     const qc = useQueryClient()
+    const navigate = useNavigate()
     const [labels, setLabels] = useState<Record<number, string>>({})
     const [error, setError] = useState<string | null>(null)
 
@@ -259,6 +260,19 @@ export function Review() {
             void qc.invalidateQueries({queryKey: ['servers']})
         },
         onError: (err) => setError(err instanceof Error ? err.message : 'falha ao rejeitar'),
+    })
+
+    // Pause review: put the server in `disabled` so it leaves the review
+    // queue without deciding. Can be re-activated later (`activate` re-enters
+    // the workflow from disabled).
+    const pause = useMutation({
+        mutationFn: () => post(`/api/servers/${serverId}/disable`, {}),
+        onSuccess: () => {
+            void qc.invalidateQueries({queryKey: ['servers']})
+            void qc.invalidateQueries({queryKey: ['server', serverId]})
+            navigate('/registry')
+        },
+        onError: (err) => setError(err instanceof Error ? err.message : 'falha ao pausar revisão'),
     })
 
     if (detail.isLoading) return <main className="page"><p className="muted">Carregando…</p></main>
@@ -308,7 +322,9 @@ export function Review() {
                 <>
                     <p className="muted">
                         Rótulos sugeridos pela heurística (classificados automaticamente). Ajuste antes de aprovar —
-                        WRITE e ADMIN exigirão confirmação explícita a cada execução.
+                        WRITE muda dados (incl. config/credenciais sensíveis) e ADMIN executa comandos/código ou
+                        apaga em massa de forma irreversível; ambos exigirão confirmação explícita
+                        ({'{'}"confirmed": true{'}'}) a cada execução.
                     </p>
                     <div className="card">
                         <table>
@@ -380,9 +396,43 @@ export function Review() {
                             >
                                 Rejeitar servidor
                             </button>
+                            <button
+                                type="button"
+                                disabled={pause.isPending}
+                                title="Sai da revisão sem decidir; fica desativado e pode ser reativado depois"
+                                onClick={() => pause.mutate()}
+                            >
+                                {pause.isPending ? 'Pausando…' : 'Pausar revisão (desativar)'}
+                            </button>
                         </div>
                     )}
                 </>
+            )}
+
+            {s.lifecycle === 'awaiting_review' && s.tools.length === 0 && (
+                <div className="card" style={{marginBottom: 16, borderColor: 'var(--amber)'}}>
+                    <p style={{marginTop: 0}}>
+                        Nenhuma tool foi descoberta para este servidor. Rejete, pause a revisão, ou aprove
+                        mesmo assim (o servidor fica ativo sem tools — útil se o remoto expõe tools
+                        dinamicamente).
+                    </p>
+                    <div className="row">
+                        <button
+                            type="button"
+                            className="primary"
+                            disabled={approve.isPending}
+                            onClick={() => approve.mutate({labels: []})}
+                        >
+                            {approve.isPending ? 'Aprovando…' : 'Aprovar sem tools'}
+                        </button>
+                        <button type="button" disabled={reject.isPending} onClick={() => reject.mutate()}>
+                            Rejeitar servidor
+                        </button>
+                        <button type="button" disabled={pause.isPending} onClick={() => pause.mutate()}>
+                            Pausar revisão (desativar)
+                        </button>
+                    </div>
+                </div>
             )}
         </main>
     )

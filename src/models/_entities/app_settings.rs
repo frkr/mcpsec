@@ -219,6 +219,11 @@ pub struct Model {
     pub registry_url: String,
     pub sync_interval_seconds: Option<i64>,
     pub auto_sync_enabled: Option<bool>,
+    /// Postgres URI configured by the operator. Presence (together with
+    /// `migrated_to_postgres_at`) marks this SQLite file as superseded.
+    pub postgres_uri: Option<String>,
+    /// When the SQLite → Postgres data copy committed.
+    pub migrated_to_postgres_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

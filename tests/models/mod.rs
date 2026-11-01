@@ -209,6 +209,7 @@ mod users;
 mod mcp_servers;
 
 mod mcp_tools;
+mod mcp_tools_tests;
 
 mod app_settings;
 

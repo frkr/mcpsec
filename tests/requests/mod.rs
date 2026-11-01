@@ -205,4 +205,10 @@
 */
 
 mod auth;
+mod custom_servers;
+mod db_status;
 mod prepare_data;
+mod proxy;
+mod server_meta;
+mod server_review;
+mod servers_list;

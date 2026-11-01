@@ -229,6 +229,12 @@ pub struct Model {
     pub registry_updated_at: Option<DateTimeWithTimeZone>,
     pub is_latest: Option<bool>,
     pub sync_source: String,
+    /// User-edited display title; when set, served instead of `title`.
+    pub custom_title: Option<String>,
+    /// User-edited description; when set, served instead of `description`.
+    pub custom_description: Option<String>,
+    /// When the operator acknowledged this row (suppresses the NOVO badge).
+    pub acknowledged_at: Option<DateTimeWithTimeZone>,
     pub lifecycle: String,
     pub enabled: bool,
     pub activated_by: Option<String>,

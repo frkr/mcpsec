@@ -225,7 +225,7 @@ export function Registry() {
     const [page, setPage] = useState(1)
     const debouncedQuery = useDebounced(query, 300)
     const servers = useServers({q: debouncedQuery, lifecycle, page, pageSize: PAGE_SIZE})
-    const sync = useSyncStatus()
+    const sync = useSyncStatus({poll: true})
     const invalidate = useInvalidateAll()
     const [error, setError] = useState<string | null>(null)
 
@@ -319,70 +319,53 @@ export function Registry() {
 
             <div className="card">
                 <div className="spread" style={{marginBottom: 8}}>
-          <span className="muted">
-            {lifecycle === 'all' ? (
-                <>
-                    {filteredItems} servidor(es)
-                    {debouncedQuery.trim() !== '' && ' encontrados'}
-                </>
-            ) : (
-                <>
-                    {totalItems} em “{lifecycle}”
-                    {debouncedQuery.trim() !== '' && ` para “${debouncedQuery}”`}
-                    {' '}· {filteredItems} no total (todos os status)
-                </>
-            )}
-          </span>
+                    <span className="muted">
+                        {lifecycle === 'all' ? (
+                            <>
+                                {filteredItems} servidor(es)
+                                {debouncedQuery.trim() !== '' && ' encontrados'}
+                            </>
+                        ) : (
+                            <>
+                                {totalItems} em “{lifecycle}”
+                                {debouncedQuery.trim() !== '' && ` para “${debouncedQuery}”`}
+                                {' '}· {filteredItems} no total (todos os status)
+                            </>
+                        )}
+                    </span>
                 </div>
-                <table>
-                    <thead>
-                    <tr>
-                        <th>Servidor</th>
-                        <th>Versão</th>
-                        <th>Endpoint</th>
-                        <th>Status</th>
-                        <th style={{width: 200}}>Ações</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    {servers.isFetching && !servers.isPlaceholderData && (
-                        <tr>
-                            <td colSpan={5} className="muted">
-                                Carregando…
-                            </td>
-                        </tr>
-                    )}
-                    {!servers.isFetching && items.length === 0 && (
-                        <tr>
-                            <td colSpan={5} className="muted">
-                                Nenhum servidor. A sincronização pode ser disparada em Configurações.
-                            </td>
-                        </tr>
-                    )}
+                {servers.isFetching && !servers.isPlaceholderData && (
+                    <div className="muted" style={{padding: '8px 2px'}}>Carregando…</div>
+                )}
+                {!servers.isFetching && items.length === 0 && (
+                    <div className="muted" style={{padding: '8px 2px'}}>
+                        Nenhum servidor. A sincronização pode ser disparada em Configurações.
+                    </div>
+                )}
+                <div className="server-cards">
                     {items.map((s: ServerSummary) => (
-                        <tr key={s.id}>
-                            <td>
+                        <div className="server-card" key={s.id}>
+                            <div className="server-card-head">
                                 <ServerTitle server={s}/>
-                                {s.description && (
-                                    <div className="muted" style={{maxWidth: 420}}>
-                                        {s.description.length > 140 ? `${s.description.slice(0, 140)}…` : s.description}
-                                    </div>
-                                )}
-                                {s.last_error &&
-                                    <div className="mono" style={{color: 'var(--red)'}}>{s.last_error}</div>}
-                            </td>
-                            <td className="mono">{s.version}</td>
-                            <td className="mono muted"
-                                style={{maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis'}}>
-                                {s.remote_type}: {s.remote_url}
-                            </td>
-                            <td>
-                                <LifecycleBadge lifecycle={s.lifecycle}/>
-                                {s.registry_status !== 'active' && (
-                                    <div className="muted" style={{fontSize: 11}}>registry: {s.registry_status}</div>
-                                )}
-                            </td>
-                            <td>
+                                <div className="server-card-status">
+                                    {s.sync_source === 'custom' && <span className="badge source-custom">custom</span>}
+                                    {/* NOVO badge: only for un-triaged rows. Triaged
+                                        rows (`Marcar N como triados`) show no badge
+                                        at all, as the settings action promises. */}
+                                    {s.is_new && <LifecycleBadge lifecycle="new"/>}
+                                    {s.lifecycle !== 'new' && <LifecycleBadge lifecycle={s.lifecycle}/>}
+                                    <span className="mono muted">v{s.version}</span>
+                                </div>
+                            </div>
+                            {s.description && (
+                                <div className="server-card-desc">
+                                    {s.description.length > 200 ? `${s.description.slice(0, 200)}…` : s.description}
+                                </div>
+                            )}
+                            {s.last_error && (
+                                <div className="mono server-card-error">{s.last_error}</div>
+                            )}
+                            <div className="server-card-foot">
                                 <div className="row">
                                     {(s.lifecycle === 'new' || s.lifecycle === 'rejected' || s.lifecycle === 'disabled') && (
                                         <button
@@ -426,11 +409,10 @@ export function Registry() {
                                         <button type="button" className="small">Detalhes</button>
                                     </Link>
                                 </div>
-                            </td>
-                        </tr>
+                            </div>
+                        </div>
                     ))}
-                    </tbody>
-                </table>
+                </div>
                 <Pagination
                     page={servers.data?.page ?? page}
                     totalPages={totalPages}

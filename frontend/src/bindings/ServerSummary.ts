@@ -5,6 +5,15 @@
  */
 export type ServerSummary = { id: number, registry_name: string, title: string, description: string | null, version: string, remote_url: string, remote_type: string, registry_status: string, is_latest: boolean, 
 /**
+ * `registry` (mirrored by the sync) or `custom` (registered by hand).
+ * The UI badges custom rows and the custom tab filters on it.
+ */
+sync_source: string, 
+/**
  * Lifecycle enum serialized as its string form (`new`, `active`, …).
  */
-lifecycle: string, enabled: boolean, last_error: string | null, activated_at: string | null, };
+lifecycle: string, enabled: boolean, last_error: string | null, activated_at: string | null, 
+/**
+ * `NOVO` badge should show (unacknowledged and still in `new`).
+ */
+is_new: boolean, };

@@ -207,8 +207,9 @@
 import {useState} from 'react'
 import {Link, useParams} from 'react-router'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {get, post} from '../api/client'
+import {get, post, put} from '../api/client'
 import type {ServerDetail} from '../bindings/ServerDetail'
+import type {ServerMetaParams} from '../bindings/ServerMetaParams'
 import {CategoryBadge, LifecycleBadge} from '../components/Badges'
 
 export function ServerPage() {
@@ -216,6 +217,9 @@ export function ServerPage() {
     const serverId = Number(id)
     const qc = useQueryClient()
     const [error, setError] = useState<string | null>(null)
+    const [editMeta, setEditMeta] = useState(false)
+    const [metaTitle, setMetaTitle] = useState('')
+    const [metaDesc, setMetaDesc] = useState('')
 
     const detail = useQuery({
         queryKey: ['server', serverId],
@@ -233,6 +237,31 @@ export function ServerPage() {
             void qc.invalidateQueries({queryKey: ['servers']})
         },
         onError: (err) => setError(err instanceof Error ? err.message : 'falha ao reenviar a descoberta'),
+    })
+
+    const saveMeta = useMutation({
+        mutationFn: (params: ServerMetaParams) =>
+            put<ServerDetail>(`/api/servers/${serverId}/meta`, params),
+        onSuccess: () => {
+            setError(null)
+            setEditMeta(false)
+            void qc.invalidateQueries({queryKey: ['server', serverId]})
+            void qc.invalidateQueries({queryKey: ['servers']})
+        },
+        onError: (err) => setError(err instanceof Error ? err.message : 'falha ao salvar título/descrição'),
+    })
+
+    const act = useMutation({
+        mutationFn: (action: 'approve' | 'reject' | 'disable' | 'activate') =>
+            post<{ ok: boolean }>(`/api/servers/${serverId}/${action}`, {}),
+        onSuccess: (_res, action) => {
+            setError(null)
+            if (action !== 'activate') {
+                void qc.invalidateQueries({queryKey: ['server', serverId]})
+                void qc.invalidateQueries({queryKey: ['servers']})
+            }
+        },
+        onError: (err) => setError(err instanceof Error ? err.message : 'falha na ação'),
     })
 
     if (detail.isLoading)
@@ -274,6 +303,43 @@ export function ServerPage() {
                 <Link to="/registry">← voltar ao registro</Link>
             </div>
 
+            <div className="row" style={{marginBottom: 16}}>
+                {(s.lifecycle === 'new' || s.lifecycle === 'rejected' || s.lifecycle === 'disabled') && (
+                    <button
+                        type="button"
+                        className="primary"
+                        disabled={act.isPending}
+                        onClick={() => act.mutate('activate')}
+                    >
+                        Ativar
+                    </button>
+                )}
+                {s.lifecycle === 'awaiting_review' && (
+                    <Link to={`/review/${s.id}`}>
+                        <button type="button" className="primary">Revisar tools</button>
+                    </Link>
+                )}
+                {s.lifecycle === 'active' && (
+                    <>
+                        <Link to="/runner">
+                            <button type="button">Abrir runner</button>
+                        </Link>
+                        <button
+                            type="button"
+                            className="danger"
+                            disabled={act.isPending}
+                            onClick={() => {
+                                if (window.confirm('Desativar este servidor? Ele sai do runner e do proxy MCP até ser reativado.')) {
+                                    act.mutate('disable')
+                                }
+                            }}
+                        >
+                            Desativar
+                        </button>
+                    </>
+                )}
+            </div>
+
             {error && <div className="error-box">{error}</div>}
 
             {stuckDiscovering && (
@@ -297,10 +363,75 @@ export function ServerPage() {
 
             <div className="grid-2">
                 <div className="card">
-                    <h3 style={{marginTop: 0}}>Metadados</h3>
-                    <p>{s.description ?? '—'}</p>
+                    <div className="spread">
+                        <h3 style={{marginTop: 0, marginBottom: 0}}>Metadados</h3>
+                        {!editMeta && (
+                            <button
+                                type="button"
+                                className="small"
+                                onClick={() => {
+                                    setMetaTitle(s.title === s.original_title ? '' : s.title)
+                                    setMetaDesc(s.description === s.original_description ? '' : (s.description ?? ''))
+                                    setEditMeta(true)
+                                }}
+                            >
+                                Editar
+                            </button>
+                        )}
+                    </div>
+                    {editMeta ? (
+                        <div style={{marginTop: 10}}>
+                            <label htmlFor="meta-title">Título (vazio = usar o original)</label>
+                            <input
+                                id="meta-title"
+                                value={metaTitle}
+                                placeholder={s.original_title}
+                                onChange={(e) => setMetaTitle(e.target.value)}
+                            />
+                            <label htmlFor="meta-desc">Descrição (vazio = usar a original)</label>
+                            <textarea
+                                id="meta-desc"
+                                value={metaDesc}
+                                placeholder={s.original_description ?? ''}
+                                onChange={(e) => setMetaDesc(e.target.value)}
+                            />
+                            <div className="row" style={{marginTop: 10}}>
+                                <button
+                                    type="button"
+                                    className="primary small"
+                                    disabled={saveMeta.isPending}
+                                    onClick={() =>
+                                        saveMeta.mutate({
+                                            title: metaTitle.trim() === '' ? null : metaTitle,
+                                            description: metaDesc.trim() === '' ? null : metaDesc,
+                                        })
+                                    }
+                                >
+                                    {saveMeta.isPending ? 'Salvando…' : 'Salvar'}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="small"
+                                    onClick={() => setEditMeta(false)}
+                                >
+                                    Cancelar
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <p>{s.description ?? '—'}</p>
+                    )}
+                    {(s.title !== s.original_title || s.description !== s.original_description) && (
+                        <div className="mono muted" style={{marginTop: 6, fontSize: 11}}>
+                            original: {s.original_title}
+                            {s.original_description && ` — ${s.original_description.slice(0, 80)}`}
+                        </div>
+                    )}
                     <div className="mono muted">
                         endpoint: {s.remote_type} {s.remote_url}
+                    </div>
+                    <div className="mono muted">
+                        origem: {s.sync_source === 'custom' ? 'customizado (manual)' : 'registry oficial'}
                     </div>
                     <div className="mono muted">registry: {s.registry_status}</div>
                     {s.activated_at && (

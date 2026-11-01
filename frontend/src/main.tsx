@@ -210,7 +210,10 @@ import {QueryClientProvider} from '@tanstack/react-query'
 import { RouterProvider } from 'react-router'
 import {queryClient} from './layout/Layout.tsx'
 import { router } from './routes.tsx'
+import {initTheme} from './theme.ts'
 import './styles.css'
+
+initTheme()
 
 const root = document.getElementById('root')
 

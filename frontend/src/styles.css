@@ -218,6 +218,22 @@
     --purple: #a78bfa;
 }
 
+/* Light theme: overrides when <html data-theme="light">. Same variable
+   names, so every component adapts without extra selectors. */
+:root[data-theme='light'] {
+    --bg: #f4f6fb;
+    --panel: #ffffff;
+    --panel-2: #eef1f8;
+    --border: #d8deeb;
+    --text: #1a2133;
+    --muted: #5d6b85;
+    --accent: #2f6bff;
+    --green: #12a463;
+    --amber: #b97a12;
+    --red: #d63c50;
+    --purple: #7c5cf0;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -293,6 +309,63 @@ a {
     padding: 16px;
 }
 
+/* Registry listing: card grid instead of table rows. */
+.server-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.server-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.server-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.server-card-status {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.server-card-desc {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.server-card-error {
+    color: var(--red);
+    font-size: 11px;
+    word-break: break-all;
+}
+
+.server-card-foot {
+    margin-top: auto;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+}
+
+.badge.muted-badge {
+    background: color-mix(in srgb, var(--muted) 10%, transparent);
+    border-color: color-mix(in srgb, var(--muted) 25%, transparent);
+    color: var(--muted);
+}
+
 button {
     background: var(--panel-2);
     color: var(--text);
@@ -315,7 +388,7 @@ button:disabled {
 button.primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: #ffffff;
 }
 
 button.danger {
@@ -385,66 +458,72 @@ tr:last-child td {
 }
 
 .badge.read_only {
-    background: rgba(62, 207, 142, 0.12);
+    background: color-mix(in srgb, var(--green) 12%, transparent);
     color: var(--green);
-    border-color: rgba(62, 207, 142, 0.3);
+    border-color: color-mix(in srgb, var(--green) 30%, transparent);
 }
 
 .badge.write {
-    background: rgba(245, 179, 66, 0.12);
+    background: color-mix(in srgb, var(--amber) 12%, transparent);
     color: var(--amber);
-    border-color: rgba(245, 179, 66, 0.3);
+    border-color: color-mix(in srgb, var(--amber) 30%, transparent);
 }
 
 .badge.admin {
-    background: rgba(239, 91, 110, 0.12);
+    background: color-mix(in srgb, var(--red) 12%, transparent);
     color: var(--red);
-    border-color: rgba(239, 91, 110, 0.3);
+    border-color: color-mix(in srgb, var(--red) 30%, transparent);
 }
 
 .badge.lifecycle-new {
-    background: rgba(91, 140, 255, 0.12);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
     color: var(--accent);
-    border-color: rgba(91, 140, 255, 0.35);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .badge.lifecycle-activating {
-    background: rgba(167, 139, 250, 0.12);
+    background: color-mix(in srgb, var(--purple) 12%, transparent);
     color: var(--purple);
-    border-color: rgba(167, 139, 250, 0.35);
+    border-color: color-mix(in srgb, var(--purple) 35%, transparent);
 }
 
 .badge.lifecycle-awaiting_review {
-    background: rgba(245, 179, 66, 0.12);
+    background: color-mix(in srgb, var(--amber) 12%, transparent);
     color: var(--amber);
-    border-color: rgba(245, 179, 66, 0.3);
+    border-color: color-mix(in srgb, var(--amber) 30%, transparent);
 }
 
 .badge.lifecycle-active {
-    background: rgba(62, 207, 142, 0.12);
+    background: color-mix(in srgb, var(--green) 12%, transparent);
     color: var(--green);
-    border-color: rgba(62, 207, 142, 0.3);
+    border-color: color-mix(in srgb, var(--green) 30%, transparent);
 }
 
 .badge.lifecycle-rejected, .badge.lifecycle-disabled {
-    background: rgba(138, 148, 173, 0.12);
+    background: color-mix(in srgb, var(--muted) 12%, transparent);
     color: var(--muted);
     border-color: var(--border);
 }
 
 .badge.status-success {
-    background: rgba(62, 207, 142, 0.12);
+    background: color-mix(in srgb, var(--green) 12%, transparent);
     color: var(--green);
 }
 
 .badge.status-failed {
-    background: rgba(239, 91, 110, 0.12);
+    background: color-mix(in srgb, var(--red) 12%, transparent);
     color: var(--red);
 }
 
 .badge.status-running {
-    background: rgba(91, 140, 255, 0.12);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
     color: var(--accent);
+}
+
+.badge.source-custom {
+    background: color-mix(in srgb, var(--purple) 12%, transparent);
+    color: var(--purple);
+    border-color: color-mix(in srgb, var(--purple) 35%, transparent);
 }
 
 .muted {
@@ -471,8 +550,8 @@ tr:last-child td {
 }
 
 .error-box {
-    background: rgba(239, 91, 110, 0.08);
-    border: 1px solid rgba(239, 91, 110, 0.35);
+    background: color-mix(in srgb, var(--red) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
     color: var(--red);
     border-radius: 8px;
     padding: 10px 12px;

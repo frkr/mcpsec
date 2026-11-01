@@ -271,6 +271,14 @@ async fn can_create_with_password() {
         user.password, params.password,
         "the password must be stored hashed, never in the clear"
     );
+    assert_eq!(
+        user.role, "admin",
+        "every registered user is an admin for now"
+    );
+    assert!(
+        user.is_admin(),
+        "a registered user must pass the admin check"
+    );
     assert_debug_snapshot!((user.email, user.name));
 }
 #[tokio::test]

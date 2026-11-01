@@ -207,6 +207,9 @@
 import {useEffect, useState} from 'react'
 import {useMutation, useQuery} from '@tanstack/react-query'
 import {get, post, put} from '../api/client'
+import type {DatabaseStatus} from '../bindings/DatabaseStatus'
+import type {MigrationResult} from '../bindings/MigrationResult'
+import type {DatabaseSwitchParams} from '../bindings/DatabaseSwitchParams'
 import type {SettingsView} from '../bindings/SettingsView'
 import {useInvalidateAll, useSyncStatus} from '../layout/Layout'
 
@@ -216,13 +219,20 @@ export function SettingsPage() {
         queryKey: ['settings'],
         queryFn: () => get<SettingsView>('/api/settings'),
     })
-    const sync = useSyncStatus()
+    const database = useQuery({
+        queryKey: ['settings-database'],
+        queryFn: () => get<DatabaseStatus>('/api/settings/database'),
+    })
+    const sync = useSyncStatus({poll: true})
 
     const [url, setUrl] = useState('')
     const [interval, setInterval] = useState(900)
     const [auto, setAuto] = useState(true)
     const [saved, setSaved] = useState(false)
     const [error, setError] = useState<string | null>(null)
+
+    const [pgUri, setPgUri] = useState('')
+    const [pgResult, setPgResult] = useState<MigrationResult | null>(null)
 
     useEffect(() => {
         if (settings.data) {
@@ -249,6 +259,33 @@ export function SettingsPage() {
         onError: (err) => setError(err instanceof Error ? err.message : 'falha ao disparar sync'),
     })
 
+    // Count of un-triaged `new` servers: drives the bulk-acknowledge button.
+    const newCount = useQuery({
+        queryKey: ['servers', {newCount: true}],
+        queryFn: () =>
+            get<import('../layout/Layout').ServerPageResponse>('/api/servers?lifecycle=new&page_size=1'),
+        refetchInterval: 15000,
+    })
+
+    const acknowledge = useMutation({
+        mutationFn: () => post<{ ok: boolean; acknowledged: number }>('/api/servers/acknowledge-new', {}),
+        onSuccess: () => {
+            setError(null)
+            invalidate()
+        },
+        onError: (err) => setError(err instanceof Error ? err.message : 'falha ao marcar como triado'),
+    })
+
+    const switchDb = useMutation({
+        mutationFn: (params: DatabaseSwitchParams) => post<MigrationResult>('/api/settings/database', params),
+        onSuccess: (res) => {
+            setPgResult(res)
+            setPgUri('')
+            invalidate()
+        },
+        onError: (err) => setPgResult({ok: false, copied: {}, restart_required: false, message: err instanceof Error ? err.message : 'falha na migração'}),
+    })
+
     if (settings.isLoading) return <main className="page"><p className="muted">Carregando…</p></main>
 
     const running = sync.data?.runs.find((r) => r.status === 'running')
@@ -260,6 +297,22 @@ export function SettingsPage() {
                 Fonte de dados do sincronizador e cadência de atualização. O intervalo vale a partir da
                 próxima verificação (tick a cada minuto), sem reiniciar o serviço.
             </p>
+
+            {database.data?.degraded_fallback && (
+                <div className="error-box">
+                    <strong>Modo degradado:</strong> o Postgres configurado está inacessível e o sistema
+                    está rodando num arquivo SQLite antigo ({database.data.configured_postgres_uri}).
+                    As escritas estão bloqueadas — os dados aqui estão desatualizados. Corrija a conexão e
+                    reinicie o serviço.
+                </div>
+            )}
+            {database.data?.restart_required && (
+                <div className="error-box">
+                    <strong>Reinicie o serviço:</strong> os dados já foram copiados para o Postgres, mas
+                    este processo ainda grava no arquivo SQLite antigo. Ao reiniciar, o Postgres passa a
+                    ser usado. Escritas feitas agora serão descartadas.
+                </div>
+            )}
 
             <div className="grid-2">
                 <div className="card">
@@ -296,6 +349,16 @@ export function SettingsPage() {
                                 onClick={() => runNow.mutate()}>
                             {running ? 'Sincronizando…' : 'Sincronizar agora'}
                         </button>
+                        <button
+                            type="button"
+                            disabled={acknowledge.isPending || (newCount.data?.counts?.new ?? 0) === 0}
+                            title="Marca todos os servidores em 'novo' como desativados: sai o badge NOVO, nada fica executável; ative um a um depois"
+                            onClick={() => acknowledge.mutate()}
+                        >
+                            {acknowledge.isPending
+                                ? 'Marcando…'
+                                : `Desativar ${newCount.data?.counts?.new ?? 0} novos (triagem em lote)`}
+                        </button>
                         {saved && <span className="muted">salvo ✓</span>}
                     </div>
                     {error && <div className="error-box">{error}</div>}
@@ -331,6 +394,76 @@ export function SettingsPage() {
                         </tbody>
                     </table>
                 </div>
+            </div>
+
+            <div className="card" style={{marginTop: 16}}>
+                <h3 style={{marginTop: 0}}>Banco de dados</h3>
+                <p className="muted" style={{marginTop: 0}}>
+                    Em uso agora: <span className="mono">{database.data?.backend ?? '…'}</span>
+                    {database.data?.active_uri && <> · <span className="mono">{database.data.active_uri}</span></>}
+                </p>
+
+                {database.data?.backend === 'sqlite' && (
+                    <>
+                        <p>
+                            Quer usar Postgres? Cole a URI de conexão (crie o banco antes; o schema é
+                            criado e os dados copiados automaticamente). Depois de copiar,
+                            <strong> reinicie o serviço</strong> para ativar.
+                        </p>
+                        <label htmlFor="pguri">URI do Postgres</label>
+                        <input
+                            id="pguri"
+                            className="mono"
+                            placeholder="postgres://usuario:senha@host:5432/mcpsec"
+                            value={pgUri}
+                            onChange={(e) => setPgUri(e.target.value)}
+                        />
+                        <div className="row" style={{marginTop: 10}}>
+                            <button
+                                type="button"
+                                className="primary"
+                                disabled={switchDb.isPending || pgUri.trim() === ''}
+                                onClick={() => {
+                                    if (
+                                        window.confirm(
+                                            'Copiar TODOS os dados para o Postgres? O arquivo SQLite atual será marcado como substituído e deixará de ser usado ao reiniciar.',
+                                        )
+                                    ) {
+                                        switchDb.mutate({postgres_uri: pgUri.trim()})
+                                    }
+                                }}
+                            >
+                                {switchDb.isPending ? 'Copiando…' : 'Migrar para o Postgres'}
+                            </button>
+                        </div>
+                        <p className="muted" style={{marginTop: 10, fontSize: 12}}>
+                            ⚠ Depois de migrar, mova a URI para a variável de ambiente{' '}
+                            <span className="mono">DATABASE_URL</span> — assim o sistema não volta ao SQLite
+                            se o arquivo for apagado. Enquanto o Postgres estiver inacessível, o sistema
+                            volta ao SQLite antigo em modo somente-leitura.
+                        </p>
+                    </>
+                )}
+
+                {database.data?.backend !== 'sqlite' && (
+                    <p className="muted">
+                        O sistema já roda no Postgres. Para trocar de banco, altere{' '}
+                        <span className="mono">DATABASE_URL</span> no ambiente e reinicie.
+                    </p>
+                )}
+
+                {pgResult && (
+                    <div className={pgResult.ok ? 'result-box' : 'error-box'} style={{marginTop: 10}}>
+                        {pgResult.message}
+                        {pgResult.ok && (
+                            <div className="mono" style={{marginTop: 6, fontSize: 12}}>
+                                {Object.entries(pgResult.copied)
+                                    .map(([t, n]) => `${t}: ${n}`)
+                                    .join(' · ')}
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </main>
     )

@@ -223,11 +223,16 @@ pub struct ServerSummary {
     pub remote_type: String,
     pub registry_status: String,
     pub is_latest: bool,
+    /// `registry` (mirrored by the sync) or `custom` (registered by hand).
+    /// The UI badges custom rows and the custom tab filters on it.
+    pub sync_source: String,
     /// Lifecycle enum serialized as its string form (`new`, `active`, …).
     pub lifecycle: String,
     pub enabled: bool,
     pub last_error: Option<String>,
     pub activated_at: Option<String>,
+    /// `NOVO` badge should show (unacknowledged and still in `new`).
+    pub is_new: bool,
 }
 
 impl ServerSummary {
@@ -236,17 +241,19 @@ impl ServerSummary {
         Self {
             id: m.id,
             registry_name: m.registry_name.clone(),
-            title: m.title.clone(),
-            description: m.description.clone(),
+            title: m.display_title().to_string(),
+            description: m.display_description(),
             version: m.version.clone(),
             remote_url: m.remote_url.clone(),
             remote_type: m.remote_type.clone(),
             registry_status: m.registry_status.clone(),
             is_latest: m.is_latest.unwrap_or(false),
+            sync_source: m.sync_source.clone(),
             lifecycle: m.lifecycle.clone(),
             enabled: m.enabled,
             last_error: m.last_error.clone(),
             activated_at: m.activated_at.map(|t| t.to_rfc3339()),
+            is_new: m.show_new_badge(),
         }
     }
 }
@@ -292,12 +299,19 @@ pub struct ServerDetail {
     #[ts(type = "number")]
     pub id: i64,
     pub registry_name: String,
+    /// Effective title: the user's `custom_title` when set, else registry's.
     pub title: String,
+    /// Effective description: `custom_description` when set, else registry's.
     pub description: Option<String>,
+    /// Original registry title (what sync keeps overwriting).
+    pub original_title: String,
+    /// Original registry description.
+    pub original_description: Option<String>,
     pub version: String,
     pub remote_url: String,
     pub remote_type: String,
     pub registry_status: String,
+    pub sync_source: String,
     pub lifecycle: String,
     pub enabled: bool,
     pub last_error: Option<String>,
@@ -311,12 +325,15 @@ impl ServerDetail {
         Self {
             id: m.id,
             registry_name: m.registry_name.clone(),
-            title: m.title.clone(),
-            description: m.description.clone(),
+            title: m.display_title().to_string(),
+            description: m.display_description(),
+            original_title: m.title.clone(),
+            original_description: m.description.clone(),
             version: m.version.clone(),
             remote_url: m.remote_url.clone(),
             remote_type: m.remote_type.clone(),
             registry_status: m.registry_status.clone(),
+            sync_source: m.sync_source.clone(),
             lifecycle: m.lifecycle.clone(),
             enabled: m.enabled,
             last_error: m.last_error.clone(),

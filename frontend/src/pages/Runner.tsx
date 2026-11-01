@@ -262,7 +262,7 @@ export function Runner() {
                 }}>
                     {servers.map((s) => (
                         <option key={s.id} value={s.id}>
-                            {s.title} ({s.tools.length} tools)
+                            {s.title}
                         </option>
                     ))}
                 </select>

@@ -4,4 +4,20 @@ import type { ToolView } from "./ToolView";
 /**
  * Server detail payload for the review and runner screens.
  */
-export type ServerDetail = { id: number, registry_name: string, title: string, description: string | null, version: string, remote_url: string, remote_type: string, registry_status: string, lifecycle: string, enabled: boolean, last_error: string | null, activated_at: string | null, tools: Array<ToolView>, };
+export type ServerDetail = { id: number, registry_name: string, 
+/**
+ * Effective title: the user's `custom_title` when set, else registry's.
+ */
+title: string, 
+/**
+ * Effective description: `custom_description` when set, else registry's.
+ */
+description: string | null, 
+/**
+ * Original registry title (what sync keeps overwriting).
+ */
+original_title: string, 
+/**
+ * Original registry description.
+ */
+original_description: string | null, version: string, remote_url: string, remote_type: string, registry_status: string, sync_source: string, lifecycle: string, enabled: boolean, last_error: string | null, activated_at: string | null, tools: Array<ToolView>, };

@@ -217,6 +217,7 @@ import {ServerPage} from './pages/ServerPage.tsx'
 import {SettingsPage} from './pages/SettingsPage.tsx'
 import {ProxyDocs} from './pages/ProxyDocs.tsx'
 import {ProxyPage} from './pages/ProxyPage.tsx'
+import {CustomServers} from './pages/CustomServers.tsx'
 
 export const router = createBrowserRouter([
   {
@@ -227,20 +228,23 @@ export const router = createBrowserRouter([
       { path: 'login', element: <Login /> },
       { path: 'register', element: <Register /> },
       {
-        element: <RequireAuth />,
+        // Layout wraps everything: the topbar is visible even for public
+        // pages (login/register/docs). Route guards live per-page below.
+        element: <Layout/>,
         children: [
-            {
-                element: <Layout/>,
-                children: [
-                    {path: 'registry', element: <Registry/>},
-                    {path: 'server/:id', element: <ServerPage/>},
-                    {path: 'review/:id', element: <Review/>},
-                    {path: 'runner', element: <Runner/>},
-                    {path: 'proxy', element: <ProxyPage/>},
-                    {path: 'proxy/docs', element: <ProxyDocs/>},
-                    {path: 'settings', element: <SettingsPage/>},
-                ],
-            },
+          {
+            element: <RequireAuth />,
+            children: [
+                {path: 'registry', element: <Registry/>},
+                {path: 'custom-servers', element: <CustomServers/>},
+                {path: 'server/:id', element: <ServerPage/>},
+                {path: 'review/:id', element: <Review/>},
+                {path: 'runner', element: <Runner/>},
+                {path: 'proxy', element: <ProxyPage/>},
+                {path: 'settings', element: <SettingsPage/>},
+            ],
+          },
+          { path: 'docs', element: <ProxyDocs /> },
         ],
       },
     ],

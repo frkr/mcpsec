@@ -430,7 +430,14 @@ fn truncate(s: &str, max: usize) -> String {
 /// rebinding is out of scope for this fence; the hostname literal check plus
 /// https enforcement blocks the realistic vectors (localhost, 169.254
 /// metadata services, RFC1918 hosts, plain-http exfiltration).
-fn ssrf_guard(url: &str) -> Result<(), String> {
+///
+/// Shared by the MCP client and by the custom-server CRUD, so a URL refused at
+/// the moment it is saved is the same one the activation worker would refuse
+/// later — the two must never diverge.
+///
+/// # Errors
+/// Returns a human-readable reason when the URL is unsafe to dial.
+pub(crate) fn ssrf_guard(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("invalid remote url: {e}"))?;
     if parsed.scheme() != "https" {
         return Err(format!(

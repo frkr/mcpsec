@@ -243,7 +243,7 @@ pub async fn run_sync(ctx: &AppContext, run_type: &str) -> Result<sync_runs::Mod
 
     // Reap stale runs first: a process that died mid-sync would otherwise
     // hold the single-flight lock forever.
-    sync_runs::Model::reap_stale(&ctx.db, chrono::Duration::minutes(10)).await?;
+    sync_runs::Model::reap_stale(&ctx.db, sync_runs::STALE_LEASE).await?;
     // Single-flight: an open run blocks a second one.
     if sync_runs::Model::running(&ctx.db).await?.is_some() {
         return Err(loco_rs::Error::Message(

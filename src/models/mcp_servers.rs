@@ -209,6 +209,8 @@ use chrono::Utc;
 use sea_orm::entity::prelude::*;
 use sea_orm::{QueryOrder, Set};
 
+use crate::workers::mcp::ssrf_guard;
+
 /// Server lifecycle states, stored as strings in `mcp_servers.lifecycle`.
 ///
 /// ```text
@@ -298,6 +300,95 @@ impl ToolCategory {
     }
 }
 
+/// Where a row came from. The sync worker only ever writes [`Self::Registry`]
+/// rows; everything a user registers by hand is [`Self::Custom`] and is never
+/// touched by the sync (it is not in the official registry, so a sync would
+/// otherwise have no way to keep or refresh it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncSource {
+    /// Mirrored from the official MCP registry by the sync worker.
+    Registry,
+    /// Registered manually in the UI.
+    Custom,
+}
+
+impl SyncSource {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Registry => "registry",
+            Self::Custom => "custom",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        if s == "custom" {
+            Self::Custom
+        } else {
+            Self::Registry
+        }
+    }
+
+    #[must_use]
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Self::Custom)
+    }
+}
+
+/// Remote transports a custom server may use. Only `streamable-http` is
+/// implemented by [`crate::workers::mcp::McpClient`], so anything else would
+/// activate into a dead endpoint.
+pub const STREAMABLE_HTTP: &str = "streamable-http";
+
+/// What a user types in the "new custom MCP" form.
+#[derive(Debug, Clone, Default)]
+pub struct CustomServerInput {
+    pub registry_name: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub version: String,
+    pub remote_url: String,
+    /// Defaults to [`STREAMABLE_HTTP`] when empty.
+    pub remote_type: Option<String>,
+}
+
+/// Partial update for a custom server. `None` leaves the field untouched.
+#[derive(Debug, Clone, Default)]
+pub struct CustomServerPatch {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub remote_url: Option<String>,
+}
+
+/// Why a custom-server write was refused.
+///
+/// The model owns the business rules and never knows about HTTP; the controller
+/// maps each variant onto the matching status (400 / 404 / 409).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomServerError {
+    /// Missing field, non-https URL or a host the SSRF fence rejects.
+    Invalid(String),
+    /// Another row already uses that `registry_name`.
+    DuplicateName(String),
+    /// No such custom server: the id is unknown or it is a registry row.
+    NotFound,
+    /// The lifecycle forbids the operation (e.g. deleting an active server).
+    Conflict(String),
+}
+
+impl std::fmt::Display for CustomServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(msg) | Self::DuplicateName(msg) | Self::Conflict(msg) => f.write_str(msg),
+            Self::NotFound => f.write_str("custom server not found"),
+        }
+    }
+}
+
+impl std::error::Error for CustomServerError {}
+
 /// Registry metadata refresh, applied by the sync service. Sync never touches
 /// the lifecycle: it only refreshes registry fields and the endpoint.
 #[derive(Debug)]
@@ -374,6 +465,14 @@ impl ActiveModel {
     /// disabled; existing servers keep their lifecycle and only get fresh
     /// registry metadata and endpoint.
     ///
+    /// A row the user registered by hand is **never** adopted: the sync skips
+    /// it and reports `(row, false)`. Otherwise the first time the official
+    /// registry published a server with the same name, the sync would silently
+    /// replace the user's `title`/`version`/`remote_url` with registry data
+    /// while leaving `sync_source = "custom"` on it — registry-owned content
+    /// wearing a custom badge, and the user's endpoint gone without a trace.
+    /// Renaming a custom server is the user's call, not the sync's.
+    ///
     /// # Errors
     /// Returns [`DbErr`] when the query fails.
     pub async fn upsert_from_registry(
@@ -381,6 +480,9 @@ impl ActiveModel {
         data: &RegistryUpsert,
     ) -> Result<(Model, bool), DbErr> {
         match Model::find_by_registry_name(db, &data.registry_name).await? {
+            // Manual registration wins over the registry. `false` means "no new
+            // row was created", which is what the worker counts.
+            Some(existing) if existing.sync_source().is_custom() => Ok((existing, false)),
             Some(existing) => {
                 let mut am: ActiveModel = existing.into();
                 am.title = Set(data.title.clone());
@@ -407,7 +509,7 @@ impl ActiveModel {
                     registry_published_at: Set(data.registry_published_at),
                     registry_updated_at: Set(data.registry_updated_at),
                     is_latest: Set(Some(data.is_latest)),
-                    sync_source: Set("registry".to_string()),
+                    sync_source: Set(SyncSource::Registry.as_str().to_string()),
                     lifecycle: Set(Lifecycle::New.as_str().to_string()),
                     enabled: Set(false),
                     last_error: Set(None),
@@ -500,6 +602,390 @@ impl ActiveModel {
         am.deactivated_at = Set(Some(Utc::now().into()));
         am.update(db).await
     }
+
+    /// Register a server by hand (`sync_source = custom`).
+    ///
+    /// Validation lives here, not in the handler, so every caller — HTTP, a
+    /// future import task, tests — gets the same rules: required fields, an
+    /// https endpoint that passes the same SSRF fence the activation worker
+    /// uses, and a `registry_name` nobody else has taken.
+    ///
+    /// New custom rows enter the workflow exactly like registry rows do:
+    /// `lifecycle = new`, `enabled = false`, ready for `activate`.
+    ///
+    /// # Errors
+    /// Returns [`CustomServerError`] when validation fails or the name exists.
+    pub async fn create_custom(
+        db: &DatabaseConnection,
+        input: &CustomServerInput,
+    ) -> Result<Model, CustomServerError> {
+        let registry_name = input.registry_name.trim();
+        if registry_name.is_empty() {
+            return Err(CustomServerError::Invalid(
+                "registry_name is required".to_string(),
+            ));
+        }
+        let title = input.title.trim();
+        if title.is_empty() {
+            return Err(CustomServerError::Invalid("title is required".to_string()));
+        }
+        let version = input.version.trim();
+        if version.is_empty() {
+            return Err(CustomServerError::Invalid(
+                "version is required".to_string(),
+            ));
+        }
+        let remote_url = input.remote_url.trim();
+        validate_remote_url(remote_url)?;
+
+        if let Some(existing) = Model::find_by_registry_name(db, registry_name)
+            .await
+            .map_err(|e| CustomServerError::Invalid(e.to_string()))?
+        {
+            // Say *why* it collided: a name already in the mirror needs a
+            // different identifier, not a retry.
+            return Err(CustomServerError::DuplicateName(
+                if existing.sync_source().is_custom() {
+                    format!("a custom server named '{registry_name}' already exists")
+                } else {
+                    format!(
+                        "'{registry_name}' is already mirrored from the official registry; \
+                         pick a different identifier"
+                    )
+                },
+            ));
+        }
+
+        let remote_type = input
+            .remote_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(STREAMABLE_HTTP)
+            .to_string();
+        if remote_type != STREAMABLE_HTTP {
+            return Err(CustomServerError::Invalid(format!(
+                "remote_type must be '{STREAMABLE_HTTP}'"
+            )));
+        }
+
+        let am = ActiveModel {
+            registry_name: Set(registry_name.to_string()),
+            title: Set(title.to_string()),
+            description: Set(input
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)),
+            version: Set(version.to_string()),
+            remote_url: Set(remote_url.to_string()),
+            remote_type: Set(remote_type),
+            // A custom server is not in the official registry, so these three
+            // registry fields carry neutral values instead of being made
+            // nullable: `active` keeps the UI from badging it as removed, and
+            // the timestamps are the moment it was registered.
+            registry_status: Set("active".to_string()),
+            registry_published_at: Set(Some(Utc::now().into())),
+            registry_updated_at: Set(Some(Utc::now().into())),
+            is_latest: Set(Some(true)),
+            sync_source: Set(SyncSource::Custom.as_str().to_string()),
+            // A row the operator typed by hand is not "new" in the triage
+            // sense: no badge, no bulk-triage count, and it starts disabled —
+            // activating it runs the same discovery workflow as any other.
+            acknowledged_at: Set(Some(Utc::now().into())),
+            lifecycle: Set(Lifecycle::Disabled.as_str().to_string()),
+            enabled: Set(false),
+            last_error: Set(None),
+            ..Default::default()
+        };
+        am.insert(db).await.map_err(|e| {
+            // The unique index on `registry_name` is the real race fence; a
+            // concurrent create (or a sync run landing between the pre-check
+            // and this insert) can slip past the check above. The index is
+            // shared with registry rows, so the loser of the race gets the
+            // generic "already exists" wording.
+            if e.to_string().to_ascii_lowercase().contains("unique") {
+                CustomServerError::DuplicateName(format!(
+                    "'{registry_name}' already exists; pick a different identifier"
+                ))
+            } else {
+                CustomServerError::Invalid(e.to_string())
+            }
+        })
+    }
+}
+
+impl Model {
+    /// Apply a partial update. Only custom rows can be edited: registry rows
+    /// are owned by the sync, which would overwrite the change on the next run.
+    ///
+    /// # Errors
+    /// Returns [`CustomServerError`] when the row is missing/not custom or the
+    /// new values fail validation.
+    pub async fn update_custom(
+        self,
+        db: &DatabaseConnection,
+        patch: &CustomServerPatch,
+    ) -> Result<Model, CustomServerError> {
+        if !self.sync_source().is_custom() {
+            return Err(CustomServerError::NotFound);
+        }
+        let mut am: ActiveModel = self.into();
+        if let Some(title) = patch.title.as_deref() {
+            let title = title.trim();
+            if title.is_empty() {
+                return Err(CustomServerError::Invalid("title is required".to_string()));
+            }
+            am.title = Set(title.to_string());
+        }
+        if let Some(description) = patch.description.as_deref() {
+            am.description = Set(Some(description.trim().to_string()).filter(|d| !d.is_empty()));
+        }
+        if let Some(version) = patch.version.as_deref() {
+            let version = version.trim();
+            if version.is_empty() {
+                return Err(CustomServerError::Invalid(
+                    "version is required".to_string(),
+                ));
+            }
+            am.version = Set(version.to_string());
+        }
+        if let Some(url) = patch.remote_url.as_deref() {
+            let url = url.trim();
+            validate_remote_url(url)?;
+            am.remote_url = Set(url.to_string());
+        }
+        am.update(db)
+            .await
+            .map_err(|e| CustomServerError::Invalid(e.to_string()))
+    }
+
+    /// Where this row came from.
+    #[must_use]
+    pub fn sync_source(&self) -> SyncSource {
+        SyncSource::parse(&self.sync_source)
+    }
+
+    /// The title the UI should show: the user's custom override when set,
+    /// else the registry value (which the sync keeps refreshing).
+    #[must_use]
+    pub fn display_title(&self) -> &str {
+        self.custom_title.as_deref().unwrap_or(&self.title)
+    }
+
+    /// The description the UI should show, same precedence as [`Self::display_title`].
+    #[must_use]
+    pub fn display_description(&self) -> Option<String> {
+        self.custom_description
+            .clone()
+            .or_else(|| self.description.clone())
+    }
+
+    /// Should the NOVO badge show? Only rows never acknowledged *and* still
+    /// in `new` count — a triaged row must not nag, and a processed row is
+    /// not new anymore anyway.
+    #[must_use]
+    pub fn show_new_badge(&self) -> bool {
+        self.acknowledged_at.is_none() && self.lifecycle == Lifecycle::New.as_str()
+    }
+
+    /// Bulk-triage every currently-`new` server (settings-screen action):
+    /// mark them acknowledged AND disable them. The operator's contract:
+    /// "marcados como conhecidos mas não revisados ficam desativados" — the
+    /// badge goes away, nothing becomes runnable, and each row can be
+    /// activated individually later. Idempotent: only `new` rows are touched.
+    /// Returns the number of rows updated.
+    ///
+    /// # Errors
+    /// Returns [`DbErr`] when the update fails.
+    pub async fn acknowledge_all_new(db: &DatabaseConnection) -> Result<u64, DbErr> {
+        let am = ActiveModel {
+            acknowledged_at: Set(Some(chrono::Utc::now().into())),
+            lifecycle: Set(Lifecycle::Disabled.as_str().to_string()),
+            enabled: Set(false),
+            ..Default::default()
+        };
+        let res = Entity::update_many()
+            .set(am)
+            .filter(mcp_servers::Column::Lifecycle.eq(Lifecycle::New.as_str()))
+            .filter(mcp_servers::Column::AcknowledgedAt.is_null())
+            .exec(db)
+            .await?;
+        Ok(res.rows_affected)
+    }
+
+    /// Set/clear the user's display title and description.
+    ///
+    /// Empty strings clear the override (falling back to the registry
+    /// values) — simpler for a form where "leave blank = use original".
+    ///
+    /// # Errors
+    /// Returns [`DbErr`] when the update fails.
+    pub async fn set_custom_meta(
+        self,
+        db: &DatabaseConnection,
+        title: Option<String>,
+        description: Option<String>,
+    ) -> Result<Model, DbErr> {
+        let normalize =
+            |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let mut am: ActiveModel = self.into();
+        am.custom_title = Set(normalize(title));
+        am.custom_description = Set(normalize(description));
+        am.update(db).await
+    }
+
+    /// Delete a custom server, but only from the states that are safe to
+    /// abandon: `new`, `rejected` and `disabled`.
+    ///
+    /// The allowlist is deliberate, and it is the same set the UI shows an
+    /// "Excluir" button for:
+    ///
+    /// - `active` may back live proxy sessions, so the row has to outlive them;
+    ///   `disable` first is the supported path.
+    /// - `awaiting_review` still owes a decision — rejecting it records *who*
+    ///   declined, which is the audit trail this app keeps everywhere else.
+    /// - `activating` has a worker mid-flight holding this row; deleting from
+    ///   under it would make `finish_activation` fail on a vanished record.
+    ///
+    /// A rejected or disabled server keeps the tools discovered in an earlier
+    /// activation cycle, and possibly live proxy grants on them. Deleting
+    /// cascades the tools and their `tool_calls`, but
+    /// `mcp_proxy_grants.mcp_tool_id` has no foreign key, so those grants are
+    /// revoked explicitly first rather than left dangling.
+    ///
+    /// # Errors
+    /// Returns [`CustomServerError`] when the row is missing/not custom or its
+    /// lifecycle forbids deleting.
+    pub async fn delete_custom(self, db: &DatabaseConnection) -> Result<(), CustomServerError> {
+        if !self.sync_source().is_custom() {
+            return Err(CustomServerError::NotFound);
+        }
+        match self.lifecycle() {
+            Lifecycle::New | Lifecycle::Rejected | Lifecycle::Disabled => {}
+            Lifecycle::Active => {
+                return Err(CustomServerError::Conflict(
+                    "active servers cannot be deleted; disable it first".to_string(),
+                ))
+            }
+            Lifecycle::AwaitingReview => {
+                return Err(CustomServerError::Conflict(
+                    "servers awaiting review cannot be deleted; reject them first".to_string(),
+                ))
+            }
+            Lifecycle::Activating => {
+                return Err(CustomServerError::Conflict(
+                    "discovery is still running; wait for it to finish before deleting".to_string(),
+                ))
+            }
+        }
+        let id = self.id;
+        crate::models::mcp_proxy_grants::ActiveModel::revoke_for_tools_of_server(db, id)
+            .await
+            .map_err(|e| CustomServerError::Invalid(e.to_string()))?;
+        Entity::delete_by_id(id)
+            .exec(db)
+            .await
+            .map(|_| ())
+            .map_err(|e| CustomServerError::Invalid(e.to_string()))
+    }
+
+    /// Custom servers only, newest first, with the same text filter and paging
+    /// contract as [`Model::paginate`].
+    ///
+    /// # Errors
+    /// Returns [`DbErr`] when a query fails.
+    pub async fn paginate_custom(
+        db: &DatabaseConnection,
+        q: Option<&str>,
+        page: u64,
+        page_size: u64,
+    ) -> Result<ServerPage, DbErr> {
+        use sea_orm::QuerySelect;
+
+        let page_size = page_size.clamp(1, 200);
+        let term = q
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        let scoped = || {
+            let mut query = Entity::find()
+                .filter(mcp_servers::Column::SyncSource.eq(SyncSource::Custom.as_str()));
+            if let Some(term) = &term {
+                let like = format!("%{term}%");
+                query = query.filter(
+                    sea_orm::Condition::any()
+                        .add(mcp_servers::Column::RegistryName.like(&like))
+                        .add(mcp_servers::Column::Title.like(&like))
+                        .add(mcp_servers::Column::Description.like(&like)),
+                );
+            }
+            query
+        };
+
+        let total_items = scoped().count(db).await?;
+        let total_pages = total_items.div_ceil(page_size).max(1);
+        let page = page.max(1).min(total_pages);
+        let items = scoped()
+            .order_by_desc(mcp_servers::Column::Id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all(db)
+            .await?;
+
+        let mut counts: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+        for st in [
+            Lifecycle::New,
+            Lifecycle::Activating,
+            Lifecycle::AwaitingReview,
+            Lifecycle::Active,
+            Lifecycle::Rejected,
+            Lifecycle::Disabled,
+        ] {
+            counts.insert(st.as_str().to_string(), 0);
+        }
+        // One GROUP BY over every custom row under the text filter, so the
+        // counters describe the whole set and not just the visible page.
+        #[derive(Debug, sea_orm::FromQueryResult)]
+        struct LifecycleCount {
+            lifecycle: String,
+            total: i64,
+        }
+        let rows = scoped()
+            .select_only()
+            .column(mcp_servers::Column::Lifecycle)
+            .column_as(mcp_servers::Column::Id.count(), "total")
+            .group_by(mcp_servers::Column::Lifecycle)
+            .into_model::<LifecycleCount>()
+            .all(db)
+            .await
+            .unwrap_or_default();
+        for row in rows {
+            counts.insert(row.lifecycle, row.total);
+        }
+
+        Ok(ServerPage {
+            items,
+            page,
+            page_size,
+            total_items,
+            total_pages,
+            filtered_items: total_items,
+            counts,
+        })
+    }
+}
+
+/// The URL rule shared by create and update: https only, and safe to dial.
+fn validate_remote_url(url: &str) -> Result<(), CustomServerError> {
+    if url.is_empty() {
+        return Err(CustomServerError::Invalid(
+            "remote_url is required".to_string(),
+        ));
+    }
+    ssrf_guard(url).map_err(CustomServerError::Invalid)
 }
 
 impl Model {
@@ -565,6 +1051,26 @@ impl Model {
         page: u64,
         page_size: u64,
     ) -> Result<ServerPage, DbErr> {
+        Self::paginate_with_source(db, q, lifecycle, None, page, page_size).await
+    }
+
+    /// [`Model::paginate`] plus a `sync_source` filter.
+    ///
+    /// `source` is `registry`, `custom`, or `None`/`all` for both. The
+    /// default stays "everything" so nothing that already reads this listing
+    /// changes meaning; the SPA passes `sync_source` when it wants one side
+    /// only.
+    ///
+    /// # Errors
+    /// Returns [`DbErr`] when a query fails.
+    pub async fn paginate_with_source(
+        db: &DatabaseConnection,
+        q: Option<&str>,
+        lifecycle: Option<&str>,
+        source: Option<&str>,
+        page: u64,
+        page_size: u64,
+    ) -> Result<ServerPage, DbErr> {
         use sea_orm::{FromQueryResult, QuerySelect};
 
         let page_size = page_size.clamp(1, 200);
@@ -573,6 +1079,10 @@ impl Model {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
         let state = lifecycle
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "all")
+            .map(str::to_string);
+        let source = source
             .map(str::trim)
             .filter(|s| !s.is_empty() && *s != "all")
             .map(str::to_string);
@@ -601,6 +1111,9 @@ impl Model {
             if let Some(state) = &state {
                 query = query.filter(mcp_servers::Column::Lifecycle.eq(state.as_str()));
             }
+            if let Some(source) = &source {
+                query = query.filter(mcp_servers::Column::SyncSource.eq(source.as_str()));
+            }
             query
         };
 
@@ -628,6 +1141,9 @@ impl Model {
         if term.is_some() {
             grouped = grouped.filter(text_filter());
         }
+        if let Some(source) = &source {
+            grouped = grouped.filter(mcp_servers::Column::SyncSource.eq(source.as_str()));
+        }
         let rows = grouped
             .into_model::<LifecycleCount>()
             .all(db)
@@ -654,6 +1170,9 @@ impl Model {
             let mut query = Entity::find();
             if term.is_some() {
                 query = query.filter(text_filter());
+            }
+            if let Some(source) = &source {
+                query = query.filter(mcp_servers::Column::SyncSource.eq(source.as_str()));
             }
             query.count(db).await?
         } else {

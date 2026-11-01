@@ -217,6 +217,43 @@ pub const MAGIC_LINK_LENGTH: i8 = 32;
 pub const MAGIC_LINK_EXPIRATION_MIN: i8 = 5;
 pub const RESET_TOKEN_EXPIRATION_MIN: i64 = 30;
 
+/// The authorization level of a user.
+///
+/// Today this product has a single role: every user is an admin, and every
+/// code path inserts `admin`. The column exists so the authorization model can
+/// grow without another migration of the `users` table: future, smaller roles
+/// (for example a read-only viewer or an operator allowed to sync but not to
+/// activate servers) become new variants here, each with its own capability
+/// checks on the model. Keep the state strings in this enum — never compare
+/// raw role strings in controllers — so a new role is one exhaustive `match`
+/// away from compiling everywhere it matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserRole {
+    /// Full access. The only role that exists for now.
+    Admin,
+}
+
+impl UserRole {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+        }
+    }
+
+    /// Parses a stored role string.
+    ///
+    /// Unknown values fall back to [`UserRole::Admin`], matching the current
+    /// "everyone is an admin" policy: a database written by a newer version
+    /// must not lock a user out of a build that does not know the new role yet.
+    #[must_use]
+    pub fn parse(_s: &str) -> Self {
+        // Once smaller roles land, this becomes a match with one arm per
+        // variant; the catch-all keeps today's policy until then.
+        Self::Admin
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LoginParams {
     pub email: String,
@@ -277,6 +314,18 @@ impl Authenticable for Model {
 }
 
 impl Model {
+    /// The user's authorization level, parsed from the stored role string.
+    #[must_use]
+    pub fn role(&self) -> UserRole {
+        UserRole::parse(&self.role)
+    }
+
+    /// Whether the user has full administrative access.
+    #[must_use]
+    pub fn is_admin(&self) -> bool {
+        self.role() == UserRole::Admin
+    }
+
     /// finds a user by the provided email
     ///
     /// # Errors
@@ -461,6 +510,8 @@ impl Model {
             email: ActiveValue::set(params.email.clone()),
             password: ActiveValue::set(password_hash),
             name: ActiveValue::set(params.name.clone()),
+            // Every new user is an admin for now; see `UserRole`.
+            role: ActiveValue::set(UserRole::Admin.as_str().to_string()),
             ..Default::default()
         }
         .insert(&txn)

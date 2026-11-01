@@ -206,5 +206,6 @@
 
 pub mod registry_sync;
 pub mod registry_sync_tick;
+pub mod relabel_tools;
 pub mod user_create;
 pub mod user_delete;

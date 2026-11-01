@@ -325,3 +325,221 @@ async fn listing_totals_and_search() {
         let _ = mcp_servers::Entity::delete_by_id(id).exec(db).await;
     }
 }
+
+/// Deleting a custom server must revoke the live proxy grants on its tools.
+///
+/// `mcp_proxy_grants.mcp_tool_id` has no foreign key, so nothing in the schema
+/// cleans these up: without the explicit revoke, deleting a server that had
+/// been activated, rejected and then deleted would leave grant rows pointing at
+/// tool ids that no longer exist — invisible in the UI and impossible for
+/// `live_for_session` to resolve.
+#[tokio::test]
+#[serial]
+async fn deleting_custom_server_revokes_its_tool_grants() {
+    use mcpsec::models::mcp_proxy_grants;
+    use mcpsec::models::mcp_proxy_sessions;
+    use mcpsec::models::mcp_servers::{ActiveModel as ServerAm, CustomServerInput, Lifecycle};
+    use mcpsec::models::mcp_tools;
+
+    let boot = boot_test::<App>().await.unwrap();
+    let db = &boot.app_context.db;
+
+    // A custom server with one discovered tool.
+    let server = ServerAm::create_custom(
+        db,
+        &CustomServerInput {
+            registry_name: "grant.owner".to_string(),
+            title: "Grant Owner".to_string(),
+            description: None,
+            version: "1.0.0".to_string(),
+            remote_url: "https://example.com/mcp".to_string(),
+            remote_type: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    mcp_tools::ActiveModel::replace_for_server(
+        db,
+        server.id,
+        &[mcp_tools::DiscoveredTool {
+            name: "get_item".to_string(),
+            description: Some("read".to_string()),
+            input_schema: None,
+        }],
+    )
+    .await
+    .unwrap();
+    let tool = mcp_tools::Model::list_for_server(db, server.id)
+        .await
+        .unwrap()
+        .pop()
+        .expect("the tool should have been stored");
+
+    // A live proxy session with a grant on that tool.
+    let session = mcp_proxy_sessions::ActiveModel::create_for_owner(db, 1, None, None, None)
+        .await
+        .unwrap();
+    let expiry: loco_rs::prelude::DateTimeWithTimeZone =
+        (chrono::Utc::now() + chrono::Duration::minutes(20)).into();
+    let grant = mcp_proxy_grants::ActiveModel::grant(db, session.id, tool.id, expiry, None)
+        .await
+        .unwrap();
+
+    // Reject it (so it is no longer runnable but keeps its tools), then delete.
+    let mut am: ServerAm = server.clone().into();
+    am.lifecycle = Set(Lifecycle::Rejected.as_str().to_string());
+    let server = am.update(db).await.unwrap();
+
+    server.clone().delete_custom(db).await.unwrap();
+
+    let after = mcp_proxy_grants::Entity::find_by_id(grant.id)
+        .one(db)
+        .await
+        .unwrap()
+        .expect("the grant row is kept for the audit trail");
+    assert!(
+        after.revoked_at.is_some(),
+        "the grant must be revoked, not left dangling after the tool is cascaded away"
+    );
+    assert!(
+        mcp_tools::Entity::find_by_id(tool.id)
+            .one(db)
+            .await
+            .unwrap()
+            .is_none(),
+        "the tool itself is cascaded by the server delete"
+    );
+}
+
+/// The registry sync must never adopt a hand-registered row.
+///
+/// Both sides of the ownership rule are checked: a custom row survives a sync
+/// that publishes the same name (endpoint and title untouched), and the return
+/// value still reports "not created" so the worker's counters stay honest.
+#[tokio::test]
+#[serial]
+async fn registry_sync_never_overwrites_custom_rows() {
+    use mcpsec::models::mcp_servers::{
+        ActiveModel as ServerAm, CustomServerInput, Model as ServerModel, RegistryUpsert,
+    };
+
+    let boot = boot_test::<App>().await.unwrap();
+    let db = &boot.app_context.db;
+
+    let custom = ServerAm::create_custom(
+        db,
+        &CustomServerInput {
+            registry_name: "clickup".to_string(),
+            title: "ClickUp (manual)".to_string(),
+            description: Some("mine".to_string()),
+            version: "1.0.0".to_string(),
+            remote_url: "https://mcp.clickup.com/mcp".to_string(),
+            remote_type: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // The registry later publishes a same-named entry with different data.
+    let (returned, is_new) = ServerAm::upsert_from_registry(
+        db,
+        &RegistryUpsert {
+            registry_name: "clickup".to_string(),
+            title: "ClickUp Official".to_string(),
+            description: Some("official".to_string()),
+            version: "9.9.9".to_string(),
+            remote_url: "https://registry.example.com/other".to_string(),
+            remote_type: "streamable-http".to_string(),
+            registry_status: "active".to_string(),
+            registry_published_at: None,
+            registry_updated_at: None,
+            is_latest: true,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        !is_new,
+        "adopting an existing row must not count as a create"
+    );
+    assert_eq!(returned.id, custom.id);
+
+    let saved = ServerModel::find_by_registry_name(db, "clickup")
+        .await
+        .unwrap()
+        .expect("the row must still exist");
+    assert_eq!(saved.sync_source, "custom");
+    assert_eq!(saved.title, "ClickUp (manual)", "user title wins");
+    assert_eq!(saved.version, "1.0.0", "user version wins");
+    assert_eq!(
+        saved.remote_url, "https://mcp.clickup.com/mcp",
+        "the user's endpoint must not be replaced by registry data"
+    );
+}
+
+/// A name collision reports *which* kind of row it hit, so the UI can tell the
+/// user to rename instead of "try again".
+#[tokio::test]
+#[serial]
+async fn duplicate_name_distinguishes_registry_from_custom() {
+    use mcpsec::models::mcp_servers::{
+        ActiveModel as ServerAm, CustomServerError, CustomServerInput, RegistryUpsert,
+    };
+
+    let boot = boot_test::<App>().await.unwrap();
+    let db = &boot.app_context.db;
+
+    let input = |name: &str| CustomServerInput {
+        registry_name: name.to_string(),
+        title: "T".to_string(),
+        description: None,
+        version: "1.0.0".to_string(),
+        remote_url: "https://example.com/mcp".to_string(),
+        remote_type: None,
+    };
+
+    // Collide with a custom row.
+    ServerAm::create_custom(db, &input("taken")).await.unwrap();
+    let err = ServerAm::create_custom(db, &input("taken"))
+        .await
+        .unwrap_err();
+    match err {
+        CustomServerError::DuplicateName(msg) => {
+            assert!(msg.contains("custom server"), "got: {msg}");
+        }
+        other => panic!("expected DuplicateName, got {other:?}"),
+    }
+
+    // Collide with a mirrored registry row.
+    ServerAm::upsert_from_registry(
+        db,
+        &RegistryUpsert {
+            registry_name: "official/thing".to_string(),
+            title: "Official".to_string(),
+            description: None,
+            version: "1.0.0".to_string(),
+            remote_url: "https://example.com/mcp".to_string(),
+            remote_type: "streamable-http".to_string(),
+            registry_status: "active".to_string(),
+            registry_published_at: None,
+            registry_updated_at: None,
+            is_latest: true,
+        },
+    )
+    .await
+    .unwrap();
+    let err = ServerAm::create_custom(db, &input("official/thing"))
+        .await
+        .unwrap_err();
+    match err {
+        CustomServerError::DuplicateName(msg) => {
+            assert!(
+                msg.contains("official registry"),
+                "the message must explain it is mirrored, not custom: {msg}"
+            );
+        }
+        other => panic!("expected DuplicateName, got {other:?}"),
+    }
+}

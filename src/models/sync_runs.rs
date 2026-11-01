@@ -208,6 +208,12 @@ pub use super::_entities::sync_runs::{self, ActiveModel, Column, Entity, Model};
 use sea_orm::entity::prelude::*;
 use sea_orm::{QueryOrder, QuerySelect, Set};
 
+/// How long a `running` row may hold the single-flight lock before the
+/// reapers (tick, manual button, next run) treat it as dead. A real full sync
+/// takes minutes, not hours; 10 minutes is generous for retries and slow
+/// remotes while keeping the recovery window short.
+pub const STALE_LEASE: chrono::Duration = chrono::Duration::minutes(10);
+
 impl Model {
     /// Most recent sync runs, newest first.
     ///

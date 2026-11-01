@@ -249,6 +249,20 @@ impl Task for RegistrySyncTick {
             None => true,
             Some(t) => (chrono::Utc::now() - t) >= interval,
         };
+        // Reap stale BEFORE anything else: a process that died mid-sync
+        // holds the single-flight lock and both the tick and the manual
+        // button stay blocked until it is cleared. This is the recovery path.
+        match crate::models::sync_runs::Model::reap_stale(
+            &ctx.db,
+            crate::models::sync_runs::STALE_LEASE,
+        )
+        .await
+        {
+            Ok(n) if n > 0 => tracing::warn!(reaped = n, "reaped stale sync run(s)"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "stale sync reap failed"),
+        }
+
         if !due {
             tracing::debug!(
                 interval_s = settings.sync_interval_seconds(),

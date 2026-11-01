@@ -208,6 +208,7 @@ use loco_rs::prelude::*;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::db_switch::{self, DatabaseStatus as DbStatus, DatabaseSwitchParams};
 use crate::models::app_settings;
 
 /// `GET /api/settings`
@@ -275,9 +276,64 @@ impl SettingsView {
     }
 }
 
+/// `GET /api/settings/database` — which database is live, marker state and
+/// degraded-fallback flag (drives the warnings in the settings screen).
+#[debug_handler]
+pub async fn database_status(_auth: auth::JWT, State(ctx): State<AppContext>) -> Result<Response> {
+    let state = db_switch::state();
+    let settings = app_settings::Entity::load_or_create(&ctx.db).await?;
+    let active_uri = ctx
+        .config
+        .database
+        .uri
+        .split('?')
+        .next()
+        .unwrap_or("...")
+        .to_string();
+    format::json(DbStatus {
+        backend: state.backend.as_str().to_string(),
+        active_uri: db_switch::redact_uri(&active_uri),
+        restart_required: settings.migrated_to_postgres_at.is_some()
+            && state.backend == db_switch::Backend::Sqlite
+            && !state.degraded_fallback,
+        degraded_fallback: state.degraded_fallback,
+        configured_postgres_uri: settings.postgres_uri.as_deref().map(db_switch::redact_uri),
+        migrated_to_postgres_at: settings.migrated_to_postgres_at.map(|t| t.to_rfc3339()),
+    })
+}
+
+/// `POST /api/settings/database` — copy the current database to Postgres and
+/// mark this one as superseded (activation happens on restart).
+#[debug_handler]
+pub async fn database_switch(
+    _auth: auth::JWT,
+    State(ctx): State<AppContext>,
+    Json(params): Json<DatabaseSwitchParams>,
+) -> Result<Response> {
+    if matches!(
+        ctx.environment,
+        loco_rs::environment::Environment::Production
+    ) {
+        // Production switches go through DATABASE_URL, not the UI.
+        return bad_request(
+            "em produção configure DATABASE_URL no ambiente; a troca pela UI \
+             é só para desenvolvimento",
+        );
+    }
+    if db_switch::state().backend != db_switch::Backend::Sqlite {
+        return bad_request("o sistema já está rodando no Postgres");
+    }
+    match db_switch::switch_to_postgres(&ctx.db, &params).await {
+        Ok(result) => format::json(result),
+        Err(message) => bad_request(&message),
+    }
+}
+
 pub fn routes() -> Routes {
     Routes::new()
         .prefix("/api/settings")
         .add("/", get(show))
         .add("/", put(update))
+        .add("/database", get(database_status))
+        .add("/database", post(database_switch))
 }

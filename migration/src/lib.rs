@@ -216,6 +216,10 @@ mod m20261101_002759_sync_runs;
 mod m20261101_002846_tool_calls;
 mod m20261101_010000_mcp_proxy_sessions;
 mod m20261101_010001_mcp_proxy_grants;
+mod m20261101_020000_user_roles;
+mod m20261101_030000_postgres_settings;
+mod m20261101_040000_server_custom_meta;
+mod m20261101_050000_server_acknowledged;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -230,6 +234,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20261101_002846_tool_calls::Migration),
             Box::new(m20261101_010000_mcp_proxy_sessions::Migration),
             Box::new(m20261101_010001_mcp_proxy_grants::Migration),
+            Box::new(m20261101_020000_user_roles::Migration),
+            Box::new(m20261101_030000_postgres_settings::Migration),
+            Box::new(m20261101_040000_server_custom_meta::Migration),
+            Box::new(m20261101_050000_server_acknowledged::Migration),
             // inject-above (do not remove this comment)
         ]
     }

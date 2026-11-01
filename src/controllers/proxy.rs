@@ -213,11 +213,17 @@
 //!
 //! The tool surface is dynamic:
 //!
-//! - Always present: `tool_search` and `tool_add`.
+//! - Always present: `tool_search`, `tool_add` and `make_auth`.
+//! - `make_auth` is the onboarding bridge: it answers without a session and
+//!   returns the mcpsec UI URL where the human logs in and creates a proxy
+//!   session (the bearer token). An agent that was handed an expired/missing
+//!   token calls `make_auth`, shows the link to its user, and picks the new
+//!   token from there. With no valid session, `tools/list` exposes ONLY
+//!   `make_auth`.
 //! - `tool_add(server, query?, ttl_seconds?)` resolves tools of an
 //!   authorized server into `mcp_proxy_grants` rows with a per-session TTL;
-//!   grants expire on their own, so the surface shrinks back to the two
-//!   builtin tools when the TTL lapses.
+//!   grants expire on their own, so the surface shrinks back to the builtin
+//!   tools when the TTL lapses.
 //! - `tool_search(query?)` lists the tools already callable in this session
 //!   plus a catalog of every authorized server ("ClickUp — 14 tools"), so an
 //!   agent can decide what to load next.
@@ -233,6 +239,7 @@ use crate::models::{
 
 pub const TOOL_SEARCH: &str = "tool_search";
 pub const TOOL_ADD: &str = "tool_add";
+pub const TOOL_MAKE_AUTH: &str = "make_auth";
 /// Default TTL for TOOL_ADD grants: 20 minutes.
 pub const DEFAULT_TOOL_TTL_SECONDS: i64 = 1_200;
 /// Max TTL accepted from callers: 24 hours.
@@ -305,14 +312,19 @@ async fn handle_initialize(
     id: &Value,
     params: &Value,
 ) -> Response {
-    let Some(session) = auth_session(ctx, headers).await else {
-        return rpc_http(error_response(
-            id.clone(),
-            INTERNAL_ERROR,
-            "invalid bearer token: create a proxy session in the mcpsec UI first",
-        ));
+    // `make_auth` is the public onboarding tool: a client without (or with an
+    // expired) session can still initialize and discover it. Everything else
+    // — the catalog and the granted tools — requires a live session.
+    let session = auth_session(ctx, headers).await;
+    let instructions = if session.is_some() {
+        "mcpsec proxy: use tool_search to discover tools across all \
+         authorized MCP servers, tool_add to load one server's tools for \
+         a limited time, then call them by name via tools/call."
+    } else {
+        "mcpsec proxy: no valid session token. Call the make_auth tool to get \
+         the mcpsec UI link; the human logs in there, creates a proxy session \
+         and gives you the bearer token. Then re-initialize with it."
     };
-    let _ = session;
     let requested = params
         .get("protocolVersion")
         .and_then(Value::as_str)
@@ -322,9 +334,7 @@ async fn handle_initialize(
         "protocolVersion": requested,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "mcpsec-proxy", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": "mcpsec proxy: use tool_search to discover tools across all \
-                         authorized MCP servers, tool_add to load one server's tools for \
-                         a limited time, then call them by name via tools/call.",
+        "instructions": instructions,
     });
     let mut resp = rpc_http(ok_response(id.clone(), body));
     // MCP clients discover their session handle from the initialize response.
@@ -338,7 +348,25 @@ async fn handle_initialize(
 
 // --------------------------------------------------------------- tools/list
 
-/// The two builtin proxy tools, always available.
+/// `make_auth` builtin: the onboarding bridge. Answers without a session.
+/// Returns the mcpsec UI URL where the human logs in and creates the proxy
+/// session whose bearer token the agent should use.
+fn make_auth_tool() -> Value {
+    json!({
+        "name": TOOL_MAKE_AUTH,
+        "description": "Get the mcpsec authorization link. Call this when your \
+            bearer token is missing, expired or rejected: the tool returns a URL \
+            for the human to open, log in and create a proxy session. The new \
+            session token shown there is what you must use as the bearer token \
+            for every subsequent MCP call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    })
+}
+
+/// The builtin proxy tools, always available to an authenticated session.
 fn builtin_tools() -> Vec<Value> {
     vec![
         json!({
@@ -393,8 +421,10 @@ async fn handle_tools_list(
     headers: &axum::http::HeaderMap,
     id: Value,
 ) -> Response {
+    // Without a valid session the surface is deliberately minimal: only the
+    // onboarding bridge. No catalog, no tool names, nothing else leaks.
     let Some(session) = auth_session(ctx, headers).await else {
-        return rpc_http(error_response(id, INTERNAL_ERROR, "invalid bearer token"));
+        return rpc_http(ok_response(id, json!({ "tools": [make_auth_tool()] })));
     };
     let granted = mcp_proxy_grants::ActiveModel::live_for_session(&ctx.db, session.id)
         .await
@@ -431,9 +461,6 @@ async fn handle_tools_call(
     id: Value,
     params: Value,
 ) -> Response {
-    let Some(session) = auth_session(ctx, headers).await else {
-        return rpc_http(error_response(id, INTERNAL_ERROR, "invalid bearer token"));
-    };
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -447,6 +474,20 @@ async fn handle_tools_call(
         ));
     }
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+
+    // make_auth works with or without a session: it is the bridge that
+    // produces a session. Every other tool requires a live session.
+    if name == TOOL_MAKE_AUTH {
+        return make_auth(ctx, headers, id).await;
+    }
+
+    let Some(session) = auth_session(ctx, headers).await else {
+        return rpc_http(error_response(
+            id,
+            INTERNAL_ERROR,
+            "invalid bearer token: call the make_auth tool to get the authorization link",
+        ));
+    };
     let user = match users::Entity::find_by_id(session.owner_id)
         .one(&ctx.db)
         .await
@@ -466,6 +507,60 @@ async fn handle_tools_call(
         TOOL_ADD => tool_add(ctx, id, session.id, &user.email, &arguments).await,
         _ => call_granted_tool(ctx, id, session.id, user.id, user.email, &name, arguments).await,
     }
+}
+
+/// `make_auth` builtin handler: returns the mcpsec UI link where the human
+/// logs in and creates the proxy session (the bearer token). When the caller
+/// already sent a valid session token, the link doubles as a confirmation
+/// that authentication is working.
+async fn make_auth(ctx: &AppContext, headers: &axum::http::HeaderMap, id: Value) -> Response {
+    let authenticated = auth_session(ctx, headers).await.is_some();
+    let ui_url = ui_base_url();
+    let auth_url = format!("{ui_url}/proxy");
+    let text = if authenticated {
+        format!(
+            "This proxy session is already valid. To manage sessions or create \
+             another one, open {auth_url} in a browser, log in and use \
+             \"Criar sessão\" — the token shown there is the bearer token for this MCP."
+        )
+    } else {
+        format!(
+            "Authorization required. Ask the human to open {auth_url} in a \
+             browser, log in, click \"Criar sessão\" and copy the displayed \
+             token. Then use it as the Authorization: Bearer header on this MCP \
+             endpoint and re-initialize."
+        )
+    };
+    let content = json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": {
+            "authenticated": authenticated,
+            "auth_url": auth_url,
+            "ui_url": ui_url,
+            "instructions": "open auth_url, log in, create a proxy session, \
+                             use the shown token as the bearer token",
+        },
+        "isError": false,
+    });
+    rpc_http(ok_response(id, content))
+}
+
+/// Base URL of the mcpsec UI for links handed to agents.
+///
+/// Resolution order: `APP_BASE_URL` env override, else the request host when
+/// present, else `http://localhost:5150` (the Loco default port). Only scheme
+/// + host — path components would break the link's target.
+fn ui_base_url() -> String {
+    if let Ok(base) = std::env::var("APP_BASE_URL") {
+        let base = base.trim_end_matches('/').to_string();
+        if !base.is_empty() {
+            return base;
+        }
+    }
+    format!(
+        "http://localhost:{}",
+        std::env::var("PORT").unwrap_or_else(|_| "5150".to_string())
+    )
 }
 
 /// `tool_search` builtin: callable tools of this session + catalog.

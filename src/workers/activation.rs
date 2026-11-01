@@ -207,9 +207,12 @@
 //! Activation worker: the "workflow" behind the activate button.
 //!
 //! Connects to the remote MCP server (initialize), pulls `tools/list`,
-//! replaces the local tool set with heuristic READ_ONLY/WRITE/ADMIN labels,
-//! and parks the server in `awaiting_review` for a human to approve or
-//! adjust. A stuck/dead `activating` row is simply picked up again.
+//! replaces the local tool set with heuristic READ_ONLY/WRITE/ADMIN labels
+//! — READ_ONLY reads, WRITE mutates (including sensitive config/credential
+//! work), ADMIN means execution: commands, code or mass irreversible
+//! deletion — and parks the server in `awaiting_review` for a human to
+//! approve or adjust. A stuck/dead `activating` row is simply picked up
+//! again.
 
 use loco_rs::prelude::*;
 use serde::{Deserialize, Serialize};

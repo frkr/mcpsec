@@ -208,38 +208,67 @@ import {useQuery} from '@tanstack/react-query'
 import {get} from '../api/client'
 import type {SettingsView} from '../bindings/SettingsView'
 
-/** Aba de documentação do Proxy MCP: como conectar um agente/cliente MCP,
- * como funciona tool_search/tool_add, TTLs, guardas de categoria e
- * auditoria. Os exemplos embutem a URL real do proxy e um token de exemplo
- * gerado na aba Proxy MCP. */
+/** Documentação do Proxy MCP (rota /docs, pública): como conectar um
+ * agente/cliente MCP, JSON de configuração MCP, como funciona
+ * tool_search/tool_add/make_auth, TTLs, guardas de categoria e auditoria.
+ * Os exemplos embutem a URL real do proxy e um token de exemplo gerado na
+ * aba Proxy MCP. */
 export function ProxyDocs() {
     const settings = useQuery({
         queryKey: ['settings'],
         queryFn: () => get<SettingsView>('/api/settings'),
+        retry: false,
     })
 
     const mcpUrl = `${window.location.origin}/mcp`
 
+    const mcpConfigJson = JSON.stringify(
+        {
+            mcpServers: {
+                mcpsec: {
+                    type: 'http',
+                    url: mcpUrl,
+                    headers: {
+                        Authorization: 'Bearer <token-da-sessão>',
+                    },
+                },
+            },
+        },
+        null,
+        2,
+    )
+
     return (
         <main className="page">
             <h1>Como usar o Proxy MCP</h1>
-            <p className="subtitle">
-                O proxy é um servidor MCP único que centraliza todos os seus MCPs autorizados — um endpoint,
-                um token, e descoberta de tools sob demanda.
-            </p>
+
+            <div className="card" style={{marginBottom: 16}}>
+                <h2 style={{marginTop: 0, fontSize: 16}}>Configuração MCP (copie e cole)</h2>
+                <p>
+                    Register o proxy no seu cliente MCP (Claude Code, Cursor, VS Code…) com este JSON —
+                    troque o token por um de uma sessão criada na aba <strong>Proxy MCP</strong>:
+                </p>
+                <pre className="result-box" style={{whiteSpace: 'pre-wrap'}}>{mcpConfigJson}</pre>
+                <p className="muted" style={{marginTop: 8}}>
+                    Ou na linha de comando: <span className="mono">claude mcp add-json mcpsec &lt;cole o JSON acima&gt;</span>
+                    {' '}— sem login? chame a tool <span className="mono">make_auth</span> no proxy que ele
+                    devolve o link para criar sua sessão autorizada.
+                </p>
+            </div>
 
             <div className="card" style={{marginBottom: 16}}>
                 <h2 style={{marginTop: 0, fontSize: 16}}>A ideia em 30 segundos</h2>
                 <p>
                     Em vez de conectar seu agente em dezenas de MCPs diferentes, ele conecta em{' '}
-                    <span className="mono">{mcpUrl}</span>. No início, o servidor só expõe duas tools:{' '}
-                    <span className="mono">tool_search</span> (descoberta) e{' '}
-                    <span className="mono">tool_add</span> (carregamento temporário). Quando o agente precisa
-                    das tools de, digamos, um MCP do ClickUp, ele chama{' '}
+                    <span className="mono">{mcpUrl}</span>. No início, o servidor só expõe três tools:{' '}
+                    <span className="mono">tool_search</span> (descoberta),{' '}
+                    <span className="mono">tool_add</span> (carregamento temporário) e{' '}
+                    <span className="mono">make_auth</span> (gera o link de login/autorização do painel).
+                    Quando o agente precisa das tools de, digamos, um MCP do ClickUp, ele chama{' '}
                     <span className="mono">tool_add</span> — o proxy passa a expor as tools do ClickUp por um
                     tempo configurável (padrão: 20 minutos) e, quando esse tempo expira, a superfície volta a
-                    ter apenas <span className="mono">tool_search</span> e{' '}
-                    <span className="mono">tool_add</span>.
+                    ter apenas <span className="mono">tool_search</span>,{' '}
+                    <span className="mono">tool_add</span> e <span className="mono">make_auth</span>.
                 </p>
                 <p className="muted">
                     Só entram no catálogo servidores que passaram pelo workflow de ativação do mcpsec (com
@@ -335,8 +364,8 @@ npx @modelcontextprotocol/inspector \\
                             <span className="badge read_only">READ_ONLY</span> executa livremente.
                         </li>
                         <li>
-                            <span className="badge write">WRITE</span> e{' '}
-                            <span className="badge admin">ADMIN</span> exigem{' '}
+                            <span className="badge write">WRITE</span> (muda dados) e{' '}
+                            <span className="badge admin">ADMIN</span> (executa comandos/código) exigem{' '}
                             <span className="mono">{`{"confirmed": true}`}</span> nos argumentos — o agente precisa
                             “declarar” a ação antes de executar.
                         </li>

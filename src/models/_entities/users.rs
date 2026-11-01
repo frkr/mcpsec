@@ -223,6 +223,9 @@ pub struct Model {
     #[sea_orm(unique)]
     pub api_key: String,
     pub name: String,
+    /// `admin` for now; the column exists so smaller roles can be introduced
+    /// later without another migration.
+    pub role: String,
     pub reset_token: Option<String>,
     pub reset_sent_at: Option<DateTimeWithTimeZone>,
     pub email_verification_token: Option<String>,

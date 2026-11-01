@@ -25,6 +25,7 @@ tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 regex = { version = "1.11" }
 migration = { path = "migration" }
+sea-orm-migration = { version = "2.0", features = ["runtime-tokio-rustls", "sqlx-postgres", "sqlx-sqlite"] }
 sea-orm = { version = "2.0", features = [
   "sqlx-sqlite",
   "sqlx-postgres",

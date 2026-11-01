@@ -2914,6 +2914,7 @@ dependencies = [
  "reqwest",
  "rstest",
  "sea-orm",
+ "sea-orm-migration",
  "serde",
  "serde_json",
  "serial_test",
