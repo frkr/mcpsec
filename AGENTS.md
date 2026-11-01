@@ -30,6 +30,13 @@ not, read it directly — it is a normal markdown file.
 3. **Fat model, slim controller.** Domain logic on the model; handlers parse,
    call a model method, and render.
 
+## Copyright header (required)
+
+Todo arquivo que será comitado deve conter o cabeçalho de copyright Apache
+License 2.0. O arquivo de referência com o cabeçalho completo é
+[`examples/playground.rs`](examples/playground.rs) — copie o bloco de comentário
+do início desse arquivo para o topo de qualquer arquivo novo que você criar.
+
 ## Before you call it done
 
 ```sh

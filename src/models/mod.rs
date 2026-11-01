@@ -1,2 +1,9 @@
 pub mod _entities;
+pub mod app_settings;
+pub mod mcp_proxy_grants;
+pub mod mcp_proxy_sessions;
+pub mod mcp_servers;
+pub mod mcp_tools;
+pub mod sync_runs;
+pub mod tool_calls;
 pub mod users;

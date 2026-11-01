@@ -71,6 +71,18 @@ mailer:
     # Override the SMTP hello name (default is the machine's hostname)
     # hello_name:
 
+# Scheduler Configuration
+# The tick task enqueues the registry sync worker when the interval
+# configured in the settings screen (app_settings.sync_interval_seconds) has
+# elapsed. Cron is 6-field (seconds first) in Loco.
+scheduler:
+  output: silent
+  jobs:
+    registry_sync_tick:
+      run: "registry_sync_tick"
+      schedule: "0 */1 * * * *"
+      run_on_start: true
+
 # Initializers Configuration
 # initializers:
 #  oauth2:
@@ -82,6 +94,8 @@ mailer:
 database:
   # Database connection URI
   uri: <%= get_env(name="DATABASE_URL", default="sqlite://mcpsec_development.sqlite?mode=rwc") %>
+  # Concurrency headroom: sync worker + UI requests share the pool.
+  # Overridable per env: DB_MIN_CONNECTIONS / DB_MAX_CONNECTIONS.
   # When enabled, the sql query will be logged.
   enable_logging: <%= get_env(name="DB_LOGGING", default="false") %>
   # Set the timeout duration when acquiring a connection.

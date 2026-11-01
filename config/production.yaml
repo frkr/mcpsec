@@ -78,6 +78,18 @@ mailer:
     # Override the SMTP hello name (default is the machine's hostname)
     # hello_name:
 
+# Scheduler Configuration
+# The tick task enqueues the registry sync worker when the interval
+# configured in the settings screen (app_settings.sync_interval_seconds) has
+# elapsed. Cron is 6-field (seconds first) in Loco.
+scheduler:
+  output: silent
+  jobs:
+    registry_sync_tick:
+      run: "registry_sync_tick"
+      schedule: "0 */1 * * * *"
+      run_on_start: true
+
 # Initializers Configuration
 # initializers:
 #  oauth2:

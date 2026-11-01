@@ -14,7 +14,10 @@ use migration::Migrator;
 use std::path::Path;
 
 #[allow(unused_imports)]
-use crate::{controllers, models::_entities::users, tasks, workers::downloader::DownloadWorker};
+use crate::{
+    controllers, models::_entities::users, tasks, workers::activation::ActivationWorker,
+    workers::registry_sync::RegistrySyncWorker,
+};
 
 pub struct App;
 #[async_trait]
@@ -48,9 +51,16 @@ impl Hooks for App {
     fn routes(_ctx: &AppContext) -> AppRoutes {
         AppRoutes::with_default_routes() // controller routes below
             .add_route(controllers::auth::routes())
+            .add_route(controllers::servers::routes())
+            .add_route(controllers::settings::routes())
+            .add_route(controllers::sync::routes())
+            .add_route(controllers::mcp::routes())
+            .add_route(controllers::proxy::routes())
+            .add_route(controllers::proxy_admin::routes())
     }
     async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()> {
-        queue.register(DownloadWorker::build(ctx)).await?;
+        queue.register(RegistrySyncWorker::build(ctx)).await?;
+        queue.register(ActivationWorker::build(ctx)).await?;
         Ok(())
     }
 
@@ -59,6 +69,8 @@ impl Hooks for App {
         // tasks-inject (do not remove)
         tasks.register(tasks::user_create::UserCreate);
         tasks.register(tasks::user_delete::UserDelete);
+        tasks.register(tasks::registry_sync::RegistrySync);
+        tasks.register(tasks::registry_sync_tick::RegistrySyncTick);
     }
     async fn truncate(ctx: &AppContext) -> Result<()> {
         truncate_table(&ctx.db, users::Entity).await?;

@@ -37,9 +37,12 @@ uuid = { version = "1.6", features = ["v4"] }
 # ts-rs derives the TypeScript bindings for the `dtos` (the typed JSON API
 # contract). Present for every db app; the SPA frontend consumes the exports,
 # and a headless app can still emit them for external consumers.
-ts-rs = { version = "12", features = ["chrono-impl", "serde-compat"] }
+ts-rs = { version = "12", features = ["chrono-impl", "serde-compat", "serde-json-impl"] }
 include_dir = { version = "0.7" }
 axum-extra = { version = "0.10", features = ["form"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+url = { version = "2.5" }
+rand = { version = "0.9" }
 
 [[bin]]
 name = "mcpsec-cli"

@@ -1,26 +1,7 @@
-import { Link, Outlet, useNavigate } from 'react-router'
-import { clearToken, getToken } from './auth/token.ts'
+import {Outlet} from 'react-router'
 
+// Plain passthrough: the topbar chrome lives in `Layout` (inside the
+// authed branch); login/register render bare.
 export function App() {
-  const navigate = useNavigate()
-  const isAuthenticated = getToken() !== null
-
-  function handleLogout() {
-    clearToken()
-    navigate('/login')
-  }
-
-  return (
-    <div>
-      <nav>
-        <Link to="/">Home</Link>
-        {isAuthenticated && (
-          <button type="button" onClick={handleLogout}>
-            Logout
-          </button>
-        )}
-      </nav>
-      <Outlet />
-    </div>
-  )
+    return <Outlet/>
 }

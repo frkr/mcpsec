@@ -2,7 +2,7 @@ import { Link } from 'react-router'
 
 export function Home() {
   return (
-    <div>
+      <main className="page">
       <h1>Welcome to Loco</h1>
       <nav>
         <ul>
@@ -13,6 +13,6 @@ export function Home() {
         <Link to="/login">Log in</Link> or{' '}
         <Link to="/register">sign up</Link> to get started.
       </p>
-    </div>
+      </main>
   )
 }
