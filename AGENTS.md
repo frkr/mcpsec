@@ -189,8 +189,6 @@ contrato é testado:
 3. **Testes `e2e` enxutos**: os testes `e2e` devem seguir apenas as
    funcionalidades gerais (fluxos principais), portanto devem existir menos
    deles.
-4. **Lembrete de Pull Request**: ao terminar a tarefa, abra um Pull Request com
-   as alterações.
 
 ## Copyright header (required)
 
