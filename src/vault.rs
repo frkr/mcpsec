@@ -64,6 +64,7 @@ pub fn encrypt_headers(headers: &BTreeMap<String, String>) -> Result<String, Str
         .map_err(|e| format!("encrypt headers: {e}"))?;
 
     let mut combined = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+    #[allow(deprecated)]
     combined.extend_from_slice(nonce.as_slice());
     combined.extend_from_slice(&ciphertext);
 
