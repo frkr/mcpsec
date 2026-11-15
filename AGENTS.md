@@ -178,6 +178,20 @@ contrato é testado:
 4. Os testes que fazem isso hoje: `tests/requests/server_meta.rs` (PUT/POST
    de meta) e `tests/requests/servers_list.rs` (query exata do Registry).
 
+## Endpoints: papéis, Team e testes
+
+1. **Comentários de autorização em todo endpoint**: todo handler HTTP deve
+   documentar explicitamente nos comentários quais papéis (`UserRole`) são
+   necessários para executar a ação e se é necessário (ou não) fazer parte de
+   um `Team`.
+2. **Testes unitários obrigatórios (100% dos endpoints)**: todo endpoint deve
+   ter testes unitários cobrindo seu comportamento e regras de autorização.
+3. **Testes `e2e` enxutos**: os testes `e2e` devem seguir apenas as
+   funcionalidades gerais (fluxos principais), portanto devem existir menos
+   deles.
+4. **Lembrete de Pull Request**: ao terminar a tarefa, abra um Pull Request com
+   as alterações.
+
 ## Copyright header (required)
 
 Todo arquivo versionado deve conter o cabeçalho de copyright Apache License

@@ -9,7 +9,8 @@ Backend **Rust (Loco + Sea-ORM + SQLite/Postgres)**, frontend **React (Vite)**.
 
 | Área | O que faz |
 |---|---|
-| **Autenticação** | Registro com verificação por e-mail, login JWT, recuperação de senha, magic link e reenvio de verificação. Rotas de app exigem sessão. Papéis: hoje todo usuário registrado é `admin` (`users.role`, `UserRole`); a arquitetura já separa o check para papéis menores futuros. |
+| **Autenticação** | Registro com verificação por e-mail, login JWT, recuperação de senha, magic link e reenvio de verificação. Rotas de app exigem sessão. Papéis (`users.role`, `UserRole`): `admin` (Instance Admin), `manager` (Team Manager) e `user` (usuário regular). |
+| **Times** | CRUD de times para Instance Admins (`/teams`), com associação de usuários regulares (`user`) e gerentes de time (`manager`). |
 | **Espelho do registry** | Sincroniza `GET /v0/servers?version=latest` paginando até o fim do cursor; novos servidores entram como `new` + desativados, existentes têm metadados atualizados. |
 | **Sync agendado** | Scheduler dispara `registry_sync_tick` a cada minuto; a task decide se o intervalo configurado já venceu. Intervalo e `auto_sync_enabled` são runtime. |
 | **Single-flight** | Uma linha `running` em `sync_runs` atua como lock com lease anti-travamento; syncs concorrentes são descartados, não duplicados. |
@@ -88,25 +89,33 @@ sequenceDiagram
 
 ## API
 
-| Método | Rota | Descrição |
-|---|---|---|
-| POST | `/api/auth/register` · `/login` · `/forgot` · `/reset` | Registro, login, recuperação |
-| GET | `/api/auth/verify/{token}` · `/magic-link/{token}` · `/current` | Verificação, magic link, sessão atual |
-| POST | `/api/auth/magic-link` · `/resend-verification-mail` | Solicitar magic link / reenviar verificação |
-| GET | `/api/servers/` · `/api/servers/{id}` · `/api/servers/authorized` | Lista paginada, detalhe, servidores executáveis |
-| POST | `/api/servers/{id}/activate` · `/approve` · `/reject` · `/disable` | Etapas do workflow |
-| POST | `/api/servers/{id}/tools/{tool_id}/label` | Reclassificar categoria de uma tool |
-| POST | `/api/mcp/{server_id}/tools/{tool_name}/call` | Executar tool (guarda + auditoria) |
-| GET | `/api/mcp/{server_id}/history` | Últimas chamadas auditadas |
-| GET/PUT | `/api/settings/` | Ler/atualizar URL do registry, intervalo, auto-sync |
-| GET | `/api/settings/database` | Banco em uso, URI mascarada, flags de restart/degradado |
-| POST | `/api/settings/database` | Migrar SQLite → Postgres (copia + marca; ativa no restart) |
-| GET | `/api/sync/` · POST `/api/sync/run` | Status do sync e disparo manual |
-| POST | `/mcp/` | Endpoint MCP (Streamable HTTP, bearer token) |
-| POST/GET | `/api/proxy/sessions` | Criar (token exibido uma vez) / listar sessões |
-| DELETE | `/api/proxy/sessions/{id}` | Revogar sessão |
-| GET/POST | `/api/proxy/sessions/{id}/tools` | Snapshot das tools / conceder tools |
-| GET | `/api/proxy/me` | Quem sou eu neste token |
+| Método | Rota | Papel necessário | Descrição |
+|---|---|---|---|
+| POST | `/api/auth/register` · `/login` · `/forgot` · `/reset` | Público | Registro, login, recuperação |
+| GET | `/api/auth/verify/{token}` · `/magic-link/{token}` | Público | Verificação e magic link |
+| GET | `/api/auth/current` | Autenticado (`admin`, `manager`, `user`) | Sessão atual |
+| POST | `/api/auth/magic-link` · `/resend-verification-mail` | Público | Solicitar magic link / reenviar verificação |
+| GET | `/api/servers/` · `/api/servers/{id}` · `/api/servers/authorized` | Autenticado (`admin`, `manager`, `user`) | Lista paginada, detalhe, servidores executáveis |
+| POST | `/api/servers/{id}/activate` · `/approve` · `/reject` · `/disable` | `admin` | Etapas do workflow |
+| POST | `/api/servers/{id}/tools/{tool_id}/label` | `admin` | Reclassificar categoria de uma tool |
+| POST | `/api/mcp/{server_id}/tools/{tool_name}/call` | Autenticado (`admin`, `manager`, `user`) | Executar tool (guarda + auditoria) |
+| GET | `/api/mcp/{server_id}/history` | Autenticado (`admin`, `manager`, `user`) | Últimas chamadas auditadas |
+| GET/PUT | `/api/settings/` | `admin` | Ler/atualizar URL do registry, intervalo, auto-sync |
+| GET | `/api/settings/database` | `admin` | Banco em uso, URI mascarada, flags de restart/degradado |
+| POST | `/api/settings/database` | `admin` | Migrar SQLite → Postgres (copia + marca; ativa no restart) |
+| GET | `/api/sync/` · POST `/api/sync/run` | `admin` | Status do sync e disparo manual |
+| POST | `/mcp/` | Bearer token de sessão (`make_auth` é público) | Endpoint MCP (Streamable HTTP) |
+| POST/GET | `/api/proxy/sessions` | Autenticado (`admin`, `manager`, `user`) | Criar (token exibido uma vez) / listar sessões |
+| DELETE | `/api/proxy/sessions/{id}` | Autenticado (dono da sessão) | Revogar sessão |
+| GET/POST | `/api/proxy/sessions/{id}/tools` | Autenticado (dono da sessão) | Snapshot das tools / conceder tools |
+| GET | `/api/proxy/me` | Bearer token de sessão | Quem sou eu neste token |
+| GET | `/api/teams/` | Autenticado (`admin` vê todos; `manager`/`user` veem os seus) | Listar times |
+| POST | `/api/teams/` | `admin` | Criar time |
+| GET | `/api/teams/users` | `admin` | Listar usuários da instância para associação |
+| GET | `/api/teams/{id}` | `admin` ou membro do time (`manager`/`user`) | Detalhe do time e membros |
+| PUT/DELETE | `/api/teams/{id}` | `admin` | Atualizar ou excluir time |
+| POST | `/api/teams/{id}/members` | `admin` | Adicionar usuário (`user`) ou gerente (`manager`) ao time |
+| DELETE | `/api/teams/{id}/members/{user_id}` | `admin` | Remover membro do time |
 
 ## Telas
 

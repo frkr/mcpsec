@@ -220,6 +220,9 @@ mod m20261101_020000_user_roles;
 mod m20261101_030000_postgres_settings;
 mod m20261101_040000_server_custom_meta;
 mod m20261101_050000_server_acknowledged;
+mod m20261115_004135_teams;
+mod m20261115_004136_team_members;
+mod m20261115_005000_server_credentials;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -238,6 +241,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20261101_030000_postgres_settings::Migration),
             Box::new(m20261101_040000_server_custom_meta::Migration),
             Box::new(m20261101_050000_server_acknowledged::Migration),
+            Box::new(m20261115_004135_teams::Migration),
+            Box::new(m20261115_004136_team_members::Migration),
+            Box::new(m20261115_005000_server_credentials::Migration),
             // inject-above (do not remove this comment)
         ]
     }

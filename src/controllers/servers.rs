@@ -457,6 +457,88 @@ async fn load_user(ctx: &AppContext, auth: &auth::JWT) -> Result<String> {
     Ok(user.email)
 }
 
+async fn require_admin(ctx: &AppContext, auth: &auth::JWT) -> Result<()> {
+    let user = crate::models::users::Model::find_by_pid(&ctx.db, &auth.claims.pid).await?;
+    if !user.is_admin() {
+        return Err(Error::CustomError(
+            axum::http::StatusCode::FORBIDDEN,
+            loco_rs::controller::ErrorDetail::new("forbidden", "instance admin role required"),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, serde::Serialize, TS)]
+#[ts(export, export_to = "../frontend/src/bindings/")]
+pub struct CredentialsStatusView {
+    pub has_credentials: bool,
+    pub header_names: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize, TS)]
+#[ts(export, export_to = "../frontend/src/bindings/")]
+pub struct SetCredentialsParams {
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
+/// Returns which upstream credential header names are configured for a server (never secret values).
+///
+/// Required role: `admin` (Instance Admin).
+#[debug_handler]
+pub async fn get_credentials(
+    auth: auth::JWT,
+    Path(id): Path<i32>,
+    State(ctx): State<AppContext>,
+) -> Result<Response> {
+    require_admin(&ctx, &auth).await?;
+    let server = mcp_servers::Entity::find_by_id(id)
+        .one(&ctx.db)
+        .await?
+        .ok_or(Error::NotFound)?;
+    let header_names = server.upstream_header_names();
+    format::json(CredentialsStatusView {
+        has_credentials: !header_names.is_empty(),
+        header_names,
+    })
+}
+
+/// Encrypts and stores upstream HTTP headers (API keys, Bearer tokens, custom headers) for a server.
+///
+/// Required role: `admin` (Instance Admin).
+#[debug_handler]
+pub async fn set_credentials(
+    auth: auth::JWT,
+    Path(id): Path<i32>,
+    State(ctx): State<AppContext>,
+    Json(params): Json<SetCredentialsParams>,
+) -> Result<Response> {
+    require_admin(&ctx, &auth).await?;
+    let server = mcp_servers::Model::set_upstream_headers(&ctx.db, id, params.headers).await?;
+    let header_names = server.upstream_header_names();
+    format::json(CredentialsStatusView {
+        has_credentials: !header_names.is_empty(),
+        header_names,
+    })
+}
+
+/// Clears all encrypted upstream credentials for a server.
+///
+/// Required role: `admin` (Instance Admin).
+#[debug_handler]
+pub async fn delete_credentials(
+    auth: auth::JWT,
+    Path(id): Path<i32>,
+    State(ctx): State<AppContext>,
+) -> Result<Response> {
+    require_admin(&ctx, &auth).await?;
+    let server = mcp_servers::Model::clear_upstream_headers(&ctx.db, id).await?;
+    let header_names = server.upstream_header_names();
+    format::json(CredentialsStatusView {
+        has_credentials: !header_names.is_empty(),
+        header_names,
+    })
+}
+
 pub fn routes() -> Routes {
     Routes::new()
         .prefix("/api/servers")
@@ -472,5 +554,12 @@ pub fn routes() -> Routes {
         // SPA sends; POST stays for compatibility with existing clients.
         .add("/{id}/meta", put(update_meta))
         .add("/{id}/meta", post(update_meta))
+        .add(
+            "/{id}/credentials",
+            get(get_credentials)
+                .put(set_credentials)
+                .post(set_credentials)
+                .delete(delete_credentials),
+        )
         .add("/acknowledge-new", post(acknowledge_new))
 }

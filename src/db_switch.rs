@@ -543,6 +543,7 @@ async fn copy_mcp_servers(
                 custom_title: Set(s.custom_title.clone()),
                 custom_description: Set(s.custom_description.clone()),
                 acknowledged_at: Set(s.acknowledged_at),
+                upstream_headers_enc: Set(s.upstream_headers_enc.clone()),
                 lifecycle: Set(s.lifecycle.clone()),
                 enabled: Set(s.enabled),
                 activated_by: Set(s.activated_by.clone()),

@@ -240,6 +240,7 @@ export function Layout() {
                     {isAuthenticated && <NavLink to="/custom-servers">MCPs Customizados</NavLink>}
                     {isAuthenticated && <NavLink to="/runner">MCPs Autorizados</NavLink>}
                     {isAuthenticated && <NavLink to="/proxy">Proxy MCP</NavLink>}
+                    {isAuthenticated && <NavLink to="/teams">Times</NavLink>}
                     <NavLink to="/docs">Como usar</NavLink>
                     {isAuthenticated && <NavLink to="/settings">Configurações</NavLink>}
                 </nav>

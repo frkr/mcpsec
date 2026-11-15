@@ -245,7 +245,8 @@ impl BackgroundWorker<ActivationWorkerArgs> for ActivationWorker {
         };
 
         let client = McpClient::new(&server.remote_url, std::time::Duration::from_secs(20))
-            .map_err(loco_rs::Error::Message)?;
+            .map_err(loco_rs::Error::Message)?
+            .with_headers(server.decrypted_upstream_headers().unwrap_or_default());
 
         let outcome: Result<Vec<mcp_tools::DiscoveredTool>, String> = async {
             client.initialize().await?;

@@ -212,3 +212,5 @@ pub mod proxy_admin;
 pub mod servers;
 pub mod settings;
 pub mod sync;
+
+pub mod teams;

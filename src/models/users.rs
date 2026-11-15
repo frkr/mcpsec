@@ -229,8 +229,12 @@ pub const RESET_TOKEN_EXPIRATION_MIN: i64 = 30;
 /// away from compiling everywhere it matters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserRole {
-    /// Full access. The only role that exists for now.
+    /// Full instance-level administrative access.
     Admin,
+    /// Team Manager — can manage their assigned teams and team resources.
+    Manager,
+    /// Regular user — standard access within assigned teams.
+    User,
 }
 
 impl UserRole {
@@ -238,19 +242,22 @@ impl UserRole {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Admin => "admin",
+            Self::Manager => "manager",
+            Self::User => "user",
         }
     }
 
     /// Parses a stored role string.
     ///
-    /// Unknown values fall back to [`UserRole::Admin`], matching the current
-    /// "everyone is an admin" policy: a database written by a newer version
-    /// must not lock a user out of a build that does not know the new role yet.
+    /// Unknown values fall back to [`UserRole::User`] as a safe default.
     #[must_use]
-    pub fn parse(_s: &str) -> Self {
-        // Once smaller roles land, this becomes a match with one arm per
-        // variant; the catch-all keeps today's policy until then.
-        Self::Admin
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "admin" => Self::Admin,
+            "manager" => Self::Manager,
+            "user" => Self::User,
+            _ => Self::User,
+        }
     }
 }
 
@@ -324,6 +331,18 @@ impl Model {
     #[must_use]
     pub fn is_admin(&self) -> bool {
         self.role() == UserRole::Admin
+    }
+
+    /// Whether the user is a Team Manager.
+    #[must_use]
+    pub fn is_manager(&self) -> bool {
+        self.role() == UserRole::Manager
+    }
+
+    /// Whether the user is a Team Manager or an Instance Admin.
+    #[must_use]
+    pub fn is_manager_or_admin(&self) -> bool {
+        matches!(self.role(), UserRole::Admin | UserRole::Manager)
     }
 
     /// finds a user by the provided email
