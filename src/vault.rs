@@ -64,8 +64,7 @@ pub fn encrypt_headers(headers: &BTreeMap<String, String>) -> Result<String, Str
         .map_err(|e| format!("encrypt headers: {e}"))?;
 
     let mut combined = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    #[allow(deprecated)]
-    combined.extend_from_slice(nonce.as_slice());
+    combined.extend_from_slice(&nonce[..]);
     combined.extend_from_slice(&ciphertext);
 
     Ok(format!("{PREFIX}{}", B64.encode(combined)))
@@ -90,11 +89,13 @@ pub fn decrypt_headers(encoded: &str) -> Result<BTreeMap<String, String>, String
     let (nonce_bytes, ciphertext) = combined.split_at(NONCE_LEN);
     let key = derive_key();
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("vault key: {e}"))?;
-    #[allow(deprecated)]
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce_arr: [u8; NONCE_LEN] = nonce_bytes
+        .try_into()
+        .map_err(|_| "corrupted vault nonce".to_string())?;
+    let nonce = Nonce::from(nonce_arr);
 
     let plaintext = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| format!("decrypt headers: {e}"))?;
     serde_json::from_slice(&plaintext).map_err(|e| format!("parse vault headers: {e}"))
 }
