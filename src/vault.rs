@@ -23,11 +23,10 @@
 use std::collections::BTreeMap;
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 const PREFIX: &str = "v1:";
@@ -58,17 +57,14 @@ pub fn encrypt_headers(headers: &BTreeMap<String, String>) -> Result<String, Str
     let key = derive_key();
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| format!("vault key: {e}"))?;
 
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::rng().fill_bytes(&mut nonce_bytes);
-    #[allow(deprecated)]
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
+        .encrypt(&nonce, plaintext.as_ref())
         .map_err(|e| format!("encrypt headers: {e}"))?;
 
     let mut combined = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    combined.extend_from_slice(&nonce_bytes);
+    combined.extend_from_slice(nonce.as_slice());
     combined.extend_from_slice(&ciphertext);
 
     Ok(format!("{PREFIX}{}", B64.encode(combined)))
