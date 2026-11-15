@@ -1189,4 +1189,89 @@ impl Model {
             counts,
         })
     }
+
+    /// Stores encrypted upstream HTTP headers (e.g. `Authorization`, `X-Api-Key`)
+    /// for this server. Passing an empty map clears stored credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::Message`] if any header name is empty or encryption fails.
+    pub async fn set_upstream_headers(
+        db: &DatabaseConnection,
+        server_id: i32,
+        headers: std::collections::BTreeMap<String, String>,
+    ) -> loco_rs::model::ModelResult<Self> {
+        let server = Entity::find_by_id(server_id)
+            .one(db)
+            .await?
+            .ok_or(loco_rs::model::ModelError::EntityNotFound)?;
+        let cleaned: std::collections::BTreeMap<String, String> = headers
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let k = k.trim().to_string();
+                let v = v.trim().to_string();
+                if k.is_empty() || v.is_empty() {
+                    None
+                } else {
+                    Some((k, v))
+                }
+            })
+            .collect();
+
+        let enc = if cleaned.is_empty() {
+            None
+        } else {
+            Some(
+                crate::vault::encrypt_headers(&cleaned)
+                    .map_err(loco_rs::model::ModelError::Message)?,
+            )
+        };
+
+        let mut active: ActiveModel = server.into();
+        active.upstream_headers_enc = sea_orm::ActiveValue::set(enc);
+        Ok(active.update(db).await?)
+    }
+
+    /// Clears all encrypted upstream credentials for this server.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::EntityNotFound`] if the server does not exist.
+    pub async fn clear_upstream_headers(
+        db: &DatabaseConnection,
+        server_id: i32,
+    ) -> loco_rs::model::ModelResult<Self> {
+        let server = Entity::find_by_id(server_id)
+            .one(db)
+            .await?
+            .ok_or(loco_rs::model::ModelError::EntityNotFound)?;
+        let mut active: ActiveModel = server.into();
+        active.upstream_headers_enc = sea_orm::ActiveValue::set(None);
+        Ok(active.update(db).await?)
+    }
+
+    /// Decrypts and returns the upstream HTTP headers for this server.
+    /// Never expose these values to agents or frontend responses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`loco_rs::model::ModelError::Message`] if decryption fails.
+    pub fn decrypted_upstream_headers(
+        &self,
+    ) -> loco_rs::model::ModelResult<std::collections::BTreeMap<String, String>> {
+        match self.upstream_headers_enc.as_deref() {
+            Some(enc) if !enc.is_empty() => {
+                crate::vault::decrypt_headers(enc).map_err(loco_rs::model::ModelError::Message)
+            }
+            _ => Ok(std::collections::BTreeMap::new()),
+        }
+    }
+
+    /// Returns only the configured upstream header names (never the secret values).
+    #[must_use]
+    pub fn upstream_header_names(&self) -> Vec<String> {
+        self.decrypted_upstream_headers()
+            .map(|m| m.into_keys().collect())
+            .unwrap_or_default()
+    }
 }

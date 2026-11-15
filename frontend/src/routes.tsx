@@ -218,6 +218,7 @@ import {SettingsPage} from './pages/SettingsPage.tsx'
 import {ProxyDocs} from './pages/ProxyDocs.tsx'
 import {ProxyPage} from './pages/ProxyPage.tsx'
 import {CustomServers} from './pages/CustomServers.tsx'
+import {TeamsPage} from './pages/TeamsPage.tsx'
 
 export const router = createBrowserRouter([
   {
@@ -241,6 +242,7 @@ export const router = createBrowserRouter([
                 {path: 'review/:id', element: <Review/>},
                 {path: 'runner', element: <Runner/>},
                 {path: 'proxy', element: <ProxyPage/>},
+                {path: 'teams', element: <TeamsPage/>},
                 {path: 'settings', element: <SettingsPage/>},
             ],
           },

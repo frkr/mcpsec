@@ -44,6 +44,9 @@ axum-extra = { version = "0.10", features = ["form"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = { version = "2.5" }
 rand = { version = "0.9" }
+aes-gcm = "0.10"
+base64 = "0.22"
+sha2 = "0.10"
 
 [[bin]]
 name = "mcpsec-cli"

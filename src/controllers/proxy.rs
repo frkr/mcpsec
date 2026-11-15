@@ -847,7 +847,7 @@ async fn call_granted_tool(
         &server.remote_url,
         std::time::Duration::from_secs(60),
     ) {
-        Ok(c) => c,
+        Ok(c) => c.with_headers(server.decrypted_upstream_headers().unwrap_or_default()),
         Err(e) => return rpc_http(error_response(id, INTERNAL_ERROR, &e)),
     };
     let outcome = match client.initialize().await {

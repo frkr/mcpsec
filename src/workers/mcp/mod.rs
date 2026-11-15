@@ -221,6 +221,7 @@ pub struct McpClient {
     http: reqwest::Client,
     url: String,
     session: Mutex<Option<String>>,
+    extra_headers: std::collections::BTreeMap<String, String>,
 }
 
 impl McpClient {
@@ -245,7 +246,16 @@ impl McpClient {
             http,
             url: url.to_string(),
             session: Mutex::new(None),
+            extra_headers: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// Attaches decrypted upstream HTTP headers (e.g. `Authorization`, `X-Api-Key`)
+    /// to every outbound request made by this client.
+    #[must_use]
+    pub fn with_headers(mut self, headers: std::collections::BTreeMap<String, String>) -> Self {
+        self.extra_headers = headers;
+        self
     }
 
     async fn post(&self, body: Value, expect_response: bool) -> Result<Option<Value>, String> {
@@ -256,6 +266,9 @@ impl McpClient {
             .header("Accept", "application/json, text/event-stream")
             .header("MCP-Protocol-Version", PROTOCOL_VERSION)
             .json(&body);
+        for (k, v) in &self.extra_headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
         if let Some(sid) = session {
             req = req.header("Mcp-Session-Id", sid);
         }

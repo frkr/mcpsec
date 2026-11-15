@@ -270,7 +270,14 @@ pub async fn call(
     let arguments = params.arguments.unwrap_or(Value::Null);
     let started = std::time::Instant::now();
 
-    let result = execute(&server.remote_url, &tool_name, arguments.clone()).await;
+    let upstream_headers = server.decrypted_upstream_headers().unwrap_or_default();
+    let result = execute(
+        &server.remote_url,
+        &tool_name,
+        arguments.clone(),
+        upstream_headers,
+    )
+    .await;
     let duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
 
     let (status, result_json, error): (&str, Option<Value>, Option<String>) = match &result {
@@ -351,8 +358,14 @@ pub struct CallResponse {
 
 /// Fresh session per call: MCP remotes are stateless-ish for tools, and the
 /// proxy should not keep per-user session pools.
-async fn execute(remote_url: &str, tool: &str, arguments: Value) -> Result<Value, String> {
-    let client = McpClient::new(remote_url, std::time::Duration::from_secs(60))?;
+async fn execute(
+    remote_url: &str,
+    tool: &str,
+    arguments: Value,
+    headers: std::collections::BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let client =
+        McpClient::new(remote_url, std::time::Duration::from_secs(60))?.with_headers(headers);
     client.initialize().await?;
     client.call_tool(tool, arguments).await
 }

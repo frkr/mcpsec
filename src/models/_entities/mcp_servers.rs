@@ -235,6 +235,8 @@ pub struct Model {
     pub custom_description: Option<String>,
     /// When the operator acknowledged this row (suppresses the NOVO badge).
     pub acknowledged_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub upstream_headers_enc: Option<String>,
     pub lifecycle: String,
     pub enabled: bool,
     pub activated_by: Option<String>,
